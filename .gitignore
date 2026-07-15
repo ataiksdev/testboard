@@ -1,0 +1,10 @@
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md
+.venv/
+frontend/node_modules/
+backend/uploads/
+database.db
+__pycache__/
+*.pyc
