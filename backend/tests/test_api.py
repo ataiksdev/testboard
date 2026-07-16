@@ -165,7 +165,10 @@ def test_bug_tracker_and_reporting():
     assert resolved_bug["resolved_at"] is not None
 
     # Get Report
-    today_str = datetime.date.today().isoformat()
+    # Bug.created_at/resolved_at are stored in UTC (datetime.utcnow()), and the
+    # /api/reports endpoint interprets start_date/end_date as UTC calendar dates,
+    # so "today" must be computed in UTC here too (local date can differ near midnight).
+    today_str = datetime.datetime.utcnow().date().isoformat()
     resp = client.get(f"/api/reports?start_date={today_str}&end_date={today_str}", headers=headers)
     assert resp.status_code == 200
     report = resp.json()

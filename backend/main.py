@@ -473,36 +473,38 @@ def list_comments(project_id: Optional[int] = None, bug_id: Optional[int] = None
 
 
 # ==================== REPORTING ENDPOINTS ====================
+# Bug/ActivityLog/Comment.created_at are all stored via datetime.utcnow() (naive UTC).
+# To keep filtering consistent, start_date/end_date query params are interpreted as
+# UTC calendar dates, not the server's or client's local date.
 
-@app.get("/api/reports", response_model=ReportDataOut)
-def get_report(
-    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+def parse_report_date_range(start_date: str, end_date: str) -> tuple[datetime.datetime, datetime.datetime]:
     try:
         start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
         # Include the full end day
         end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    return start, end
 
+@app.get("/api/reports", response_model=ReportDataOut)
+def get_report(
+    start_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    start, end = parse_report_date_range(start_date, end_date)
     metrics = calculate_qa_metrics(db, start, end)
     return metrics
 
 @app.get("/api/reports/export/bugs")
 def export_bugs(
-    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    start_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    try:
-        start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    start, end = parse_report_date_range(start_date, end_date)
 
     csv_data = generate_csv_bugs_report(db, start, end)
     
@@ -513,16 +515,12 @@ def export_bugs(
 
 @app.get("/api/reports/export/projects")
 def export_projects(
-    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    start_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD, interpreted as a UTC calendar date"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    try:
-        start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    start, end = parse_report_date_range(start_date, end_date)
 
     csv_data = generate_csv_projects_report(db, start, end)
     
