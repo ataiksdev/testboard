@@ -292,3 +292,26 @@ def test_cannot_remove_last_admin():
 
     resp = client.put(f"/api/admin/users/{me['id']}", json={"is_active": False}, headers=admin_headers)
     assert resp.status_code == 400
+
+
+def test_email_login_is_case_insensitive():
+    resp = client.post("/api/auth/register", json={
+        "email": "MixedCase@Test.com",
+        "password": "password123",
+        "full_name": "Case Test"
+    })
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "mixedcase@test.com"
+
+    # Duplicate registration with different casing is rejected
+    resp = client.post("/api/auth/register", json={
+        "email": "mixedcase@TEST.com",
+        "password": "password123",
+        "full_name": "Case Test Dup"
+    })
+    assert resp.status_code == 400
+
+    # Login works regardless of casing used
+    resp = client.post("/api/auth/login", data={"username": "MIXEDCASE@TEST.COM", "password": "password123"})
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()

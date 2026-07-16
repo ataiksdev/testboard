@@ -63,6 +63,9 @@ def ensure_sqlite_schema():
         # Migrate legacy "Member" role to the new "QA" role
         connection.execute(text("UPDATE users SET role = 'QA' WHERE role = 'Member'"))
 
+        # Normalize emails to lowercase so login/registration are case-insensitive
+        connection.execute(text("UPDATE users SET email = LOWER(email) WHERE email != LOWER(email)"))
+
 ensure_sqlite_schema()
 
 def backfill_project_leads_as_members():
@@ -161,21 +164,23 @@ def save_screenshot_data(screenshot_data: Optional[str]) -> Optional[str]:
 
 @app.post("/api/auth/register", response_model=UserOut)
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
+    normalized_email = user_in.email.lower()
+
     # Check if email exists
-    existing_user = db.query(User).filter(User.email == user_in.email).first()
+    existing_user = db.query(User).filter(User.email == normalized_email).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
-    
+
     # First user is automatically Admin, others are Pending
     total_users = db.query(User).count()
     role = "Admin" if total_users == 0 else "Pending"
-    
+
     hashed_pwd = get_password_hash(user_in.password)
     new_user = User(
-        email=user_in.email,
+        email=normalized_email,
         hashed_password=hashed_pwd,
         full_name=user_in.full_name,
         role=role
@@ -187,7 +192,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
+    user = db.query(User).filter(User.email == form_data.username.lower()).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -10,9 +10,14 @@ import {
   LogOut, Terminal, Menu, X, Moon, Sun, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
+const VALID_TABS = ['projects', 'bugs', 'reports', 'admin'];
+
 const AppContent = () => {
   const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState('projects');
+  const [activeTab, setActiveTab] = useState(() => {
+    const hashTab = window.location.hash.replace('#', '');
+    return VALID_TABS.includes(hashTab) ? hashTab : 'projects';
+  });
   const [selectedProject, setSelectedProject] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('tb_sidebar_collapsed') === 'true');
@@ -26,6 +31,19 @@ const AppContent = () => {
   useEffect(() => {
     localStorage.setItem('tb_sidebar_collapsed', collapsed);
   }, [collapsed]);
+
+  useEffect(() => {
+    if (window.location.hash !== `#${activeTab}`) {
+      window.location.hash = activeTab;
+    }
+  }, [activeTab]);
+
+  // Bounce non-admins off a stale/shared #admin link
+  useEffect(() => {
+    if (user && activeTab === 'admin' && user.role !== 'Admin') {
+      setActiveTab('projects');
+    }
+  }, [user, activeTab]);
 
   // If not logged in, render Auth pages (Login/Request Access)
   if (!user) {
