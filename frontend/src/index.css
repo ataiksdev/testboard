@@ -75,6 +75,20 @@
   /* Hard offset shadow (flat, no blur) */
   --hard-shadow-sm: 3px 3px 0 var(--glass-shadow);
   --hard-shadow-md: 5px 5px 0 var(--glass-shadow);
+
+  /* Page-header banner (filled block in light mode only; inert in dark mode) */
+  --header-banner-bg: transparent;
+  --header-banner-padding: 0px;
+  --header-banner-radius: 0px;
+  --header-banner-title: var(--text-strong);
+  --header-banner-subtitle: var(--text-muted);
+  --header-banner-icon: var(--primary-neon);
+  --header-banner-cta-bg: var(--primary-neon);
+  --header-banner-cta-color: var(--text-inverse);
+  --header-banner-input-bg: var(--bg-tertiary);
+  --header-banner-input-border: var(--glass-border);
+  --header-banner-input-color: var(--text-main);
+  --header-banner-label: var(--text-muted);
 }
 
 [data-theme='light'] {
@@ -109,6 +123,20 @@
   --danger-text: #8c2f12;
   --danger-bg: rgba(193, 68, 14, 0.1);
   --danger-border: #c1440e;
+
+  /* Page-header banner: filled Bauhaus block, light mode only */
+  --header-banner-bg: var(--primary-neon);
+  --header-banner-padding: 20px 24px;
+  --header-banner-radius: var(--border-radius-md);
+  --header-banner-title: #f2eee2;
+  --header-banner-subtitle: rgba(242, 238, 226, 0.82);
+  --header-banner-icon: var(--accent-mustard);
+  --header-banner-cta-bg: #f2eee2;
+  --header-banner-cta-color: var(--primary-neon);
+  --header-banner-input-bg: rgba(242, 238, 226, 0.12);
+  --header-banner-input-border: rgba(242, 238, 226, 0.5);
+  --header-banner-input-color: #f2eee2;
+  --header-banner-label: rgba(242, 238, 226, 0.85);
 }
 
 /* Base resets */

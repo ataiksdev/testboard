@@ -90,6 +90,23 @@ class UserProjectOut(BaseModel):
         orm_mode = True
         from_attributes = True
 
+# Project Document Schemas
+class ProjectDocumentOut(BaseModel):
+    id: int
+    project_id: int
+    title: str
+    doc_type: str
+    file_url: str
+    original_filename: str
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+    uploaded_by: UserOut
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Version Schemas
 class VersionBase(BaseModel):
     version_name: str

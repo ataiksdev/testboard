@@ -41,6 +41,7 @@ class Project(Base):
     comments = relationship("Comment", back_populates="project", cascade="all, delete-orphan")
     activities = relationship("ActivityLog", back_populates="project", cascade="all, delete-orphan")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
+    documents = relationship("ProjectDocument", back_populates="project", cascade="all, delete-orphan")
 
 
 class Version(Base):
@@ -138,3 +139,22 @@ class ProjectMember(Base):
     # Relationships
     project = relationship("Project", back_populates="members")
     user = relationship("User", back_populates="project_memberships")
+
+
+class ProjectDocument(Base):
+    __tablename__ = "project_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)  # e.g. "BRD v2"
+    doc_type = Column(String, default="Other")  # BRD, Report, Test Plan, Other
+    file_url = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    project = relationship("Project", back_populates="documents")
+    uploaded_by = relationship("User")

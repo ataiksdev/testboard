@@ -2,10 +2,9 @@ import base64
 import datetime
 import io
 import re
-import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,12 +14,13 @@ from sqlalchemy.orm import Session
 import os
 
 from backend.database import engine, Base, get_db, SessionLocal
-from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember
+from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
     ASSIGNABLE_ROLES,
     ProjectCreate, ProjectOut, ProjectUpdate,
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
+    ProjectDocumentOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     BugCreate, BugOut, BugUpdate,
     CommentCreate, CommentOut,
@@ -34,10 +34,26 @@ from backend.auth import (
 from backend.reporter import (
     calculate_qa_metrics, generate_csv_bugs_report, generate_csv_projects_report
 )
+from backend.storage import get_storage_backend
 
-UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
-SCREENSHOTS_DIR = UPLOADS_DIR / "screenshots"
-SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+# UPLOADS_DIR must match storage.py's LocalDiskStorage default so the /uploads
+# static mount always serves whatever the local backend actually writes to.
+UPLOADS_DIR = Path(os.getenv("TESTBOARD_STORAGE_DIR") or (Path(__file__).resolve().parent / "uploads"))
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+DOCUMENT_MIME_TYPES = {
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "text/plain": "txt",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+}
 
 # Initialize Database tables
 Base.metadata.create_all(bind=engine)
@@ -155,10 +171,7 @@ def save_screenshot_data(screenshot_data: Optional[str]) -> Optional[str]:
         raise HTTPException(status_code=400, detail="Screenshot must be 5 MB or smaller")
 
     extension = "jpg" if mime_type == "image/jpeg" else mime_type.split("/")[-1]
-    filename = f"{uuid.uuid4().hex}.{extension}"
-    path = SCREENSHOTS_DIR / filename
-    path.write_bytes(image_bytes)
-    return f"/uploads/screenshots/{filename}"
+    return get_storage_backend().save(image_bytes, extension, mime_type=mime_type, subfolder="screenshots")
 
 # ==================== AUTHENTICATION ENDPOINTS ====================
 
@@ -475,6 +488,89 @@ def remove_project_member(project_id: int, user_id: int, current_user: User = De
     db.delete(member)
     db.commit()
     return {"message": "Member removed from project"}
+
+
+# ==================== PROJECT DOCUMENTS ENDPOINTS ====================
+
+MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024
+
+@app.get("/api/projects/{project_id}/documents", response_model=List[ProjectDocumentOut])
+def list_project_documents(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    return (
+        db.query(ProjectDocument)
+        .filter(ProjectDocument.project_id == project_id)
+        .order_by(ProjectDocument.created_at.desc())
+        .all()
+    )
+
+@app.post("/api/projects/{project_id}/documents", response_model=ProjectDocumentOut)
+async def upload_project_document(
+    project_id: int,
+    title: str = Form(...),
+    doc_type: str = Form("Other"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA")),
+    db: Session = Depends(get_db)
+):
+    require_project(db, project_id)
+
+    extension = DOCUMENT_MIME_TYPES.get(file.content_type)
+    if not extension:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Allowed: PDF, Word, Excel, PowerPoint, text, or image files."
+        )
+
+    content = await file.read()
+    if len(content) > MAX_DOCUMENT_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="Document must be 20 MB or smaller")
+
+    file_url = get_storage_backend().save(content, extension, mime_type=file.content_type, subfolder="documents")
+
+    document = ProjectDocument(
+        project_id=project_id,
+        uploaded_by_id=current_user.id,
+        title=title,
+        doc_type=doc_type,
+        file_url=file_url,
+        original_filename=file.filename or f"document.{extension}",
+        content_type=file.content_type,
+        file_size=len(content)
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    log = ActivityLog(
+        user_id=current_user.id,
+        project_id=project_id,
+        activity_type="document_uploaded",
+        new_value=title
+    )
+    db.add(log)
+    db.commit()
+
+    return document
+
+@app.delete("/api/projects/{project_id}/documents/{document_id}")
+def delete_project_document(
+    project_id: int,
+    document_id: int,
+    current_user: User = Depends(require_roles("Admin", "PM", "QA")),
+    db: Session = Depends(get_db)
+):
+    document = db.query(ProjectDocument).filter(
+        ProjectDocument.id == document_id,
+        ProjectDocument.project_id == project_id
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    get_storage_backend().delete(document.file_url)
+    db.delete(document)
+    db.commit()
+    return {"message": "Document deleted"}
 
 
 # ==================== BUGS ENDPOINTS ====================

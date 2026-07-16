@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
-  Bug as BugIcon, Plus, MessageSquare, User as UserIcon,
+  Bug as BugIcon, MessageSquare, User as UserIcon,
   AlertTriangle, CheckCircle, Clock, X, Eye, FileText, ImagePlus, Clipboard
 } from 'lucide-react';
 import { canManageBugs } from '../utils/roles';
@@ -293,50 +293,58 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
   return (
     <div style={styles.container} className="animate-fade-in">
-      {/* Header Filters */}
-      <div style={styles.header}>
-        <div style={styles.headerTitleSec}>
-          <BugIcon size={24} color="var(--primary-neon)" />
-          <h2 style={styles.title}>Bugs Kanban Board</h2>
-        </div>
-        {canEdit && (
-          <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
-            <Plus size={16} /> Log a Bug
-          </button>
-        )}
-      </div>
-
-      <div style={styles.filtersRow}>
-        <div style={styles.filterGroup}>
-          <label style={styles.filterLabel}>Project</label>
-          <select 
-            value={filterProjectId} 
-            onChange={(e) => {
-              setFilterProjectId(e.target.value);
-              if (onClearProjectFilter && e.target.value === '') {
-                onClearProjectFilter();
-              }
-            }}
-            style={styles.filterSelect}
-          >
-            <option value="">All Projects</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.key})</option>)}
-          </select>
+      <div style={styles.headerBanner}>
+        {/* Header Filters */}
+        <div style={styles.header}>
+          <div style={styles.headerTitleSec}>
+            <BugIcon size={24} color="var(--header-banner-icon)" />
+            <h2 style={styles.title}>Bugs Kanban Board</h2>
+          </div>
+          {canEdit && (
+            <button
+              className="btn-primary"
+              style={styles.addBtn}
+              onClick={() => setShowCreateModal(true)}
+              title="Log a Bug"
+              aria-label="Log a Bug"
+            >
+              <BugIcon size={22} />
+            </button>
+          )}
         </div>
 
-        {filterProjectId && (
+        <div style={styles.filtersRow}>
           <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Version</label>
-            <select 
-              value={filterVersionId} 
-              onChange={(e) => setFilterVersionId(e.target.value)}
+            <label style={styles.filterLabel}>Project</label>
+            <select
+              value={filterProjectId}
+              onChange={(e) => {
+                setFilterProjectId(e.target.value);
+                if (onClearProjectFilter && e.target.value === '') {
+                  onClearProjectFilter();
+                }
+              }}
               style={styles.filterSelect}
             >
-              <option value="">All Versions</option>
-              {versions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
+              <option value="">All Projects</option>
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.key})</option>)}
             </select>
           </div>
-        )}
+
+          {filterProjectId && (
+            <div style={styles.filterGroup}>
+              <label style={styles.filterLabel}>Version</label>
+              <select
+                value={filterVersionId}
+                onChange={(e) => setFilterVersionId(e.target.value)}
+                style={styles.filterSelect}
+              >
+                <option value="">All Versions</option>
+                {versions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Board */}
@@ -703,6 +711,16 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 const styles = {
   container: {
     padding: '10px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+  },
+  headerBanner: {
+    background: 'var(--header-banner-bg)',
+    padding: 'var(--header-banner-padding)',
+    borderRadius: 'var(--header-banner-radius)',
+    marginBottom: '24px',
+    flexShrink: 0,
   },
   header: {
     display: 'flex',
@@ -719,12 +737,20 @@ const styles = {
     fontSize: '24px',
     fontWeight: '700',
     fontFamily: 'var(--font-display)',
-    color: 'var(--text-strong)',
+    color: 'var(--header-banner-title)',
+  },
+  addBtn: {
+    width: '48px',
+    height: '48px',
+    padding: 0,
+    background: 'var(--header-banner-cta-bg)',
+    color: 'var(--header-banner-cta-color)',
+    borderRadius: 'var(--border-radius-sm)',
+    flexShrink: 0,
   },
   filtersRow: {
     display: 'flex',
     gap: '16px',
-    marginBottom: '24px',
     flexWrap: 'wrap',
   },
   filterGroup: {
@@ -736,14 +762,14 @@ const styles = {
   filterLabel: {
     fontSize: '12px',
     fontWeight: '700',
-    color: 'var(--text-muted)',
+    color: 'var(--header-banner-label)',
   },
   filterSelect: {
     padding: '8px 12px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
     borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--text-main)',
+    color: 'var(--header-banner-input-color)',
     outline: 'none',
     fontSize: '14px',
   },
@@ -751,11 +777,15 @@ const styles = {
     overflowX: 'auto',
     paddingBottom: '16px',
     width: '100%',
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
   },
   board: {
     display: 'flex',
     gap: '16px',
     minWidth: '1100px',
+    width: '100%',
   },
   column: {
     flex: 1,
@@ -763,7 +793,6 @@ const styles = {
     minWidth: '200px',
     display: 'flex',
     flexDirection: 'column',
-    maxHeight: '70vh',
   },
   columnHeader: {
     display: 'flex',
@@ -794,6 +823,7 @@ const styles = {
     gap: '12px',
     overflowY: 'auto',
     flex: 1,
+    minHeight: 0,
   },
   emptyColumnText: {
     textAlign: 'center',

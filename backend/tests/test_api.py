@@ -315,3 +315,88 @@ def test_email_login_is_case_insensitive():
     resp = client.post("/api/auth/login", data={"username": "MIXEDCASE@TEST.COM", "password": "password123"})
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+def test_project_document_upload_list_delete(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Doc Project", "key": "DOCP"}, headers=admin_headers).json()
+
+    resp = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=admin_headers,
+        data={"title": "BRD v1", "doc_type": "BRD"},
+        files={"file": ("brd.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")}
+    )
+    assert resp.status_code == 200
+    doc = resp.json()
+    assert doc["title"] == "BRD v1"
+    assert doc["doc_type"] == "BRD"
+    assert doc["original_filename"] == "brd.pdf"
+    assert doc["file_url"].startswith("/uploads/documents/")
+    assert doc["uploaded_by"]["email"] == "admin@test.com"
+
+    # Saved to disk under the injected storage backend
+    saved_files = list((tmp_path / "documents").iterdir())
+    assert len(saved_files) == 1
+
+    # Activity log recorded the upload
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+    activity = client.get(f"/api/admin/users/{me['id']}/activity", headers=admin_headers).json()
+    assert any(a["activity_type"] == "document_uploaded" for a in activity)
+
+    # Listed for the project
+    resp = client.get(f"/api/projects/{project['id']}/documents", headers=admin_headers)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+    # Reject unsupported file types
+    resp = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Bad file", "doc_type": "Other"},
+        files={"file": ("virus.exe", b"MZ", "application/x-msdownload")}
+    )
+    assert resp.status_code == 400
+
+    # Delete removes the row and the underlying file
+    resp = client.delete(f"/api/projects/{project['id']}/documents/{doc['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+    assert list((tmp_path / "documents").iterdir()) == []
+
+    resp = client.get(f"/api/projects/{project['id']}/documents", headers=admin_headers)
+    assert resp.json() == []
+
+
+def test_project_document_permissions(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    dev_headers, _ = _make_user_with_role(admin_headers, "docdev@test.com", "Doc Dev", "Dev")
+    guest_headers, _ = _make_user_with_role(admin_headers, "docguest@test.com", "Doc Guest", "Guest")
+
+    project = client.post("/api/projects", json={"name": "Perm Doc Project", "key": "PDOC"}, headers=admin_headers).json()
+
+    upload_kwargs = dict(
+        data={"title": "Report", "doc_type": "Report"},
+        files={"file": ("report.pdf", b"%PDF-1.4", "application/pdf")}
+    )
+
+    # Dev and Guest cannot upload (only Admin/PM/QA can)
+    resp = client.post(f"/api/projects/{project['id']}/documents", headers=dev_headers, **upload_kwargs)
+    assert resp.status_code == 403
+    resp = client.post(f"/api/projects/{project['id']}/documents", headers=guest_headers, **upload_kwargs)
+    assert resp.status_code == 403
+
+    # But everyone (including Guest) can list/view
+    resp = client.get(f"/api/projects/{project['id']}/documents", headers=guest_headers)
+    assert resp.status_code == 200
+
+    # Admin uploads one so we can test delete permissions
+    doc = client.post(f"/api/projects/{project['id']}/documents", headers=admin_headers, **upload_kwargs).json()
+
+    resp = client.delete(f"/api/projects/{project['id']}/documents/{doc['id']}", headers=dev_headers)
+    assert resp.status_code == 403

@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
-  FolderKanban, Plus, MessageSquare, Clock, User as UserIcon,
-  ArrowRight, FileText, CheckCircle2, ChevronRight, X, Users, UserPlus
+  FolderKanban, Plus, MessageSquare, User as UserIcon,
+  ChevronRight, X, Users, UserPlus, FileText, Download, Trash2, Upload
 } from 'lucide-react';
 import { canManageProjects, canManageMembers } from '../utils/roles';
 
 const PROJECT_STATUSES = ["Intake", "Reviewing", "Testing", "Blocked", "Completed", "Archived"];
+const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Other"];
+
+const formatFileSize = (bytes) => {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 export const ProjectTracker = ({ onSelectProject }) => {
   const [projects, setProjects] = useState([]);
@@ -20,6 +27,11 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [newCommentText, setNewCommentText] = useState('');
   const [projectMembers, setProjectMembers] = useState([]);
   const [addMemberId, setAddMemberId] = useState('');
+  const [projectDocuments, setProjectDocuments] = useState([]);
+  const [docTitle, setDocTitle] = useState('');
+  const [docType, setDocType] = useState('BRD');
+  const [docFile, setDocFile] = useState(null);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
 
   // Form fields
   const [projName, setProjName] = useState('');
@@ -175,8 +187,79 @@ export const ProjectTracker = ({ onSelectProject }) => {
     setActiveProject(project);
     setShowDetailModal(true);
     setAddMemberId('');
+    setDocTitle('');
+    setDocType('BRD');
+    setDocFile(null);
     fetchProjectComments(project.id);
     fetchProjectMembers(project.id);
+    fetchProjectDocuments(project.id);
+  };
+
+  const getFileUrl = (fileUrl) => {
+    if (!fileUrl) return '';
+    return fileUrl.startsWith('http') ? fileUrl : `${API_URL}${fileUrl}`;
+  };
+
+  const fetchProjectDocuments = async (projectId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${projectId}/documents`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        setProjectDocuments(await response.json());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleUploadDocument = async (e) => {
+    e.preventDefault();
+    if (!docFile || !docTitle.trim()) return;
+
+    try {
+      setUploadingDoc(true);
+      const formData = new FormData();
+      formData.append('title', docTitle.trim());
+      formData.append('doc_type', docType);
+      formData.append('file', docFile);
+
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/documents`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to upload document");
+      }
+
+      setDocTitle('');
+      setDocType('BRD');
+      setDocFile(null);
+      fetchProjectDocuments(activeProject.id);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
+
+  const handleDeleteDocument = async (documentId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/documents/${documentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to delete document");
+      }
+      fetchProjectDocuments(activeProject.id);
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   const fetchProjectMembers = async (projectId) => {
@@ -289,18 +372,24 @@ export const ProjectTracker = ({ onSelectProject }) => {
 
   return (
     <div style={styles.container} className="animate-fade-in">
-      <div style={styles.header}>
-        <div style={styles.headerTitleSec}>
-          <FolderKanban size={24} color="var(--primary-neon)" />
-          <h2 style={styles.title}>QA Project Tracker</h2>
+      <div style={styles.headerBanner}>
+        <div style={styles.header}>
+          <div style={styles.headerTitleSec}>
+            <FolderKanban size={24} color="var(--header-banner-icon)" />
+            <h2 style={styles.title}>QA Project Tracker</h2>
+          </div>
+          {canEdit && (
+            <button
+              className="btn-primary"
+              style={styles.addBtn}
+              onClick={() => setShowCreateModal(true)}
+            >
+              <Plus size={16} /> Add QA Project
+            </button>
+          )}
         </div>
-        {canEdit && (
-          <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
-            <Plus size={16} /> Add QA Project
-          </button>
-        )}
+        <p style={styles.subtitle}>Track high-level QA stages of all ongoing software projects.</p>
       </div>
-      <p style={styles.subtitle}>Track high-level QA stages of all ongoing software projects.</p>
 
       {/* Board Layout */}
       <div style={styles.boardScrollContainer}>
@@ -592,6 +681,86 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 )}
               </div>
 
+              {/* Documents Section */}
+              <div style={styles.detailSection}>
+                <h4 style={styles.detailTitle}>
+                  <FileText size={16} style={{ marginRight: '6px' }} />
+                  Documents ({projectDocuments.length})
+                </h4>
+                <div style={styles.teamList}>
+                  {projectDocuments.length === 0 ? (
+                    <p style={styles.noComments}>No documents uploaded yet.</p>
+                  ) : (
+                    projectDocuments.map(doc => (
+                      <div key={doc.id} style={styles.docRow}>
+                        <span style={styles.docTypeBadge}>{doc.doc_type}</span>
+                        <div style={styles.docInfo}>
+                          <span style={styles.teamName}>{doc.title}</span>
+                          <span style={styles.docMeta}>
+                            {doc.original_filename} · {formatFileSize(doc.file_size)} · {doc.uploaded_by.full_name}
+                          </span>
+                        </div>
+                        <a
+                          href={getFileUrl(doc.file_url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={styles.docActionBtn}
+                          title="Download"
+                        >
+                          <Download size={14} />
+                        </a>
+                        {canEdit && (
+                          <button
+                            style={styles.teamRemoveBtn}
+                            onClick={() => handleDeleteDocument(doc.id)}
+                            title="Delete document"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+                {canEdit && (
+                  <form onSubmit={handleUploadDocument} style={styles.docUploadForm}>
+                    <div style={styles.row}>
+                      <input
+                        type="text"
+                        value={docTitle}
+                        onChange={(e) => setDocTitle(e.target.value)}
+                        placeholder="Document title, e.g. BRD v2"
+                        required
+                        style={{ ...styles.modalInput, flex: 2 }}
+                      />
+                      <select
+                        value={docType}
+                        onChange={(e) => setDocType(e.target.value)}
+                        style={{ ...styles.modalSelect, flex: 1 }}
+                      >
+                        {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    <div style={styles.row}>
+                      <input
+                        type="file"
+                        onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                        style={styles.docFileInput}
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
+                      />
+                      <button
+                        type="submit"
+                        className="btn-secondary"
+                        style={styles.addMemberBtn}
+                        disabled={!docFile || !docTitle.trim() || uploadingDoc}
+                      >
+                        <Upload size={14} /> {uploadingDoc ? 'Uploading...' : 'Upload'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
               {/* Status Comments / Daily Updates Section */}
               <div style={styles.detailSection}>
                 <h4 style={styles.detailTitle}>
@@ -644,6 +813,16 @@ export const ProjectTracker = ({ onSelectProject }) => {
 const styles = {
   container: {
     padding: '10px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+  },
+  headerBanner: {
+    background: 'var(--header-banner-bg)',
+    padding: 'var(--header-banner-padding)',
+    borderRadius: 'var(--header-banner-radius)',
+    marginBottom: '24px',
+    flexShrink: 0,
   },
   header: {
     display: 'flex',
@@ -660,22 +839,29 @@ const styles = {
     fontSize: '24px',
     fontWeight: '700',
     fontFamily: 'var(--font-display)',
-    color: 'var(--text-strong)',
+    color: 'var(--header-banner-title)',
   },
   subtitle: {
-    color: 'var(--text-muted)',
+    color: 'var(--header-banner-subtitle)',
     fontSize: '14px',
-    marginBottom: '24px',
+  },
+  addBtn: {
+    background: 'var(--header-banner-cta-bg)',
+    color: 'var(--header-banner-cta-color)',
   },
   boardScrollContainer: {
     overflowX: 'auto',
     paddingBottom: '16px',
     width: '100%',
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
   },
   board: {
     display: 'flex',
     gap: '16px',
     minWidth: '1200px', // Ensures all 6 columns fit and scroll horizontally
+    width: '100%',
   },
   column: {
     flex: 1,
@@ -683,7 +869,6 @@ const styles = {
     minWidth: '220px',
     display: 'flex',
     flexDirection: 'column',
-    maxHeight: '75vh',
   },
   columnHeader: {
     display: 'flex',
@@ -717,6 +902,7 @@ const styles = {
     gap: '12px',
     overflowY: 'auto',
     flex: 1,
+    minHeight: 0,
   },
   emptyColumnText: {
     textAlign: 'center',
@@ -1044,5 +1230,58 @@ const styles = {
     padding: '8px 12px',
     fontSize: '13px',
     whiteSpace: 'nowrap',
+  },
+
+  // Documents section
+  docRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '8px 12px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+  },
+  docTypeBadge: {
+    fontSize: '10px',
+    fontWeight: '700',
+    color: 'var(--primary-neon)',
+    background: 'var(--primary-soft)',
+    padding: '3px 7px',
+    borderRadius: 'var(--border-radius-sm)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    flexShrink: 0,
+  },
+  docInfo: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  docMeta: {
+    fontSize: '11px',
+    color: 'var(--text-subtle)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  docActionBtn: {
+    color: 'var(--text-muted)',
+    display: 'flex',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  docUploadForm: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    marginTop: '4px',
+  },
+  docFileInput: {
+    flex: 1,
+    fontSize: '13px',
+    color: 'var(--text-muted)',
   },
 };
