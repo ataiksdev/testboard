@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { Shield, Check, X, AlertCircle, Users } from 'lucide-react';
+import { Shield, Check, X, AlertCircle, Users as UsersIcon, UserCog } from 'lucide-react';
+import { ROLES } from '../utils/roles';
+import { UserManagement } from './UserManagement';
 
 export const AdminPanel = () => {
+  const [activeTab, setActiveTab] = useState('pending');
   const [pendingUsers, setPendingUsers] = useState([]);
+  const [approvalRoles, setApprovalRoles] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const { token, API_URL } = useAuth();
@@ -31,12 +35,15 @@ export const AdminPanel = () => {
   };
 
   const handleApprove = async (userId) => {
+    const role = approvalRoles[userId] || 'QA';
     try {
       const response = await fetch(`${API_URL}/api/admin/users/${userId}/approve`, {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
-        }
+        },
+        body: JSON.stringify({ role })
       });
       if (response.ok) {
         setPendingUsers(pendingUsers.filter(u => u.id !== userId));
@@ -69,15 +76,13 @@ export const AdminPanel = () => {
     }
   };
 
-  if (loading) return <div style={styles.loading}>Loading pending access requests...</div>;
-
   return (
     <div style={styles.container} className="animate-fade-in">
       <div style={styles.header}>
-        <Shield size={24} color="#6366f1" />
+        <Shield size={24} color="var(--primary-neon)" />
         <h2 style={styles.title}>Admin Settings</h2>
       </div>
-      <p style={styles.subtitle}>Review and approve user requests to join the QA TestBoard workspace.</p>
+      <p style={styles.subtitle}>Review access requests and manage roles for the QA TestBoard workspace.</p>
 
       {error && (
         <div style={styles.errorAlert}>
@@ -86,51 +91,81 @@ export const AdminPanel = () => {
         </div>
       )}
 
-      <div className="glass-panel" style={styles.panel}>
-        <div style={styles.panelHeader}>
-          <Users size={18} color="#9ca3af" />
-          <h3 style={styles.panelTitle}>Pending Access Requests ({pendingUsers.length})</h3>
-        </div>
-
-        {pendingUsers.length === 0 ? (
-          <div style={styles.emptyState}>
-            <Check size={36} color="#10b981" style={{ marginBottom: '8px' }} />
-            <p style={{ color: '#9ca3af' }}>All clear! No pending access requests.</p>
-          </div>
-        ) : (
-          <div style={styles.list}>
-            {pendingUsers.map(user => (
-              <div key={user.id} style={styles.userRow} className="animate-slide-up">
-                <div style={styles.userInfo}>
-                  <div style={styles.avatar}>{user.full_name[0].toUpperCase()}</div>
-                  <div>
-                    <h4 style={styles.name}>{user.full_name}</h4>
-                    <span style={styles.email}>{user.email}</span>
-                  </div>
-                </div>
-                <div style={styles.actions}>
-                  <button 
-                    onClick={() => handleApprove(user.id)}
-                    className="btn-primary"
-                    style={styles.approveBtn}
-                  >
-                    <Check size={16} />
-                    Approve
-                  </button>
-                  <button 
-                    onClick={() => handleReject(user.id)}
-                    className="btn-danger"
-                    style={styles.rejectBtn}
-                  >
-                    <X size={16} />
-                    Decline
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      <div style={styles.tabRow}>
+        <button
+          style={{ ...styles.tabBtn, ...(activeTab === 'pending' ? styles.tabBtnActive : {}) }}
+          onClick={() => setActiveTab('pending')}
+        >
+          <UsersIcon size={15} /> Pending Requests {pendingUsers.length > 0 && `(${pendingUsers.length})`}
+        </button>
+        <button
+          style={{ ...styles.tabBtn, ...(activeTab === 'users' ? styles.tabBtnActive : {}) }}
+          onClick={() => setActiveTab('users')}
+        >
+          <UserCog size={15} /> All Users
+        </button>
       </div>
+
+      {activeTab === 'pending' && (
+        loading ? (
+          <div style={styles.loading}>Loading pending access requests...</div>
+        ) : (
+          <div className="glass-panel" style={styles.panel}>
+            <div style={styles.panelHeader}>
+              <UsersIcon size={18} color="var(--text-muted)" />
+              <h3 style={styles.panelTitle}>Pending Access Requests ({pendingUsers.length})</h3>
+            </div>
+
+            {pendingUsers.length === 0 ? (
+              <div style={styles.emptyState}>
+                <Check size={36} color="var(--primary-neon)" style={{ marginBottom: '8px' }} />
+                <p style={{ color: 'var(--text-muted)' }}>All clear! No pending access requests.</p>
+              </div>
+            ) : (
+              <div style={styles.list}>
+                {pendingUsers.map(user => (
+                  <div key={user.id} style={styles.userRow} className="animate-slide-up">
+                    <div style={styles.userInfo}>
+                      <div style={styles.avatar}>{user.full_name[0].toUpperCase()}</div>
+                      <div>
+                        <h4 style={styles.name}>{user.full_name}</h4>
+                        <span style={styles.email}>{user.email}</span>
+                      </div>
+                    </div>
+                    <div style={styles.actions}>
+                      <select
+                        value={approvalRoles[user.id] || 'QA'}
+                        onChange={(e) => setApprovalRoles(r => ({ ...r, [user.id]: e.target.value }))}
+                        style={styles.roleSelect}
+                      >
+                        {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <button
+                        onClick={() => handleApprove(user.id)}
+                        className="btn-primary"
+                        style={styles.approveBtn}
+                      >
+                        <Check size={16} />
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => handleReject(user.id)}
+                        className="btn-danger"
+                        style={styles.rejectBtn}
+                      >
+                        <X size={16} />
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      )}
+
+      {activeTab === 'users' && <UserManagement />}
     </div>
   );
 };
@@ -147,11 +182,12 @@ const styles = {
   },
   title: {
     fontSize: '24px',
-    fontWeight: '600',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-strong)',
   },
   subtitle: {
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     fontSize: '14px',
     marginBottom: '24px',
   },
@@ -159,12 +195,39 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    background: 'rgba(239, 68, 68, 0.12)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    borderRadius: '8px',
+    background: 'var(--danger-bg)',
+    border: '2px solid var(--danger-border)',
+    borderRadius: 'var(--border-radius-sm)',
     padding: '12px',
-    color: '#fca5a5',
+    color: 'var(--danger-text)',
     marginBottom: '20px',
+  },
+  tabRow: {
+    display: 'flex',
+    gap: '8px',
+    marginBottom: '20px',
+    borderBottom: '2px solid var(--glass-border)',
+    paddingBottom: '12px',
+  },
+  tabBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 16px',
+    background: 'transparent',
+    borderWidth: '2px',
+    borderStyle: 'solid',
+    borderColor: 'var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-muted)',
+    fontSize: '13px',
+    fontWeight: '700',
+    cursor: 'pointer',
+  },
+  tabBtnActive: {
+    background: 'var(--primary-soft)',
+    borderColor: 'var(--primary-border)',
+    color: 'var(--text-strong)',
   },
   panel: {
     padding: '24px',
@@ -173,14 +236,15 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '16px',
     marginBottom: '16px',
   },
   panelTitle: {
     fontSize: '16px',
-    fontWeight: '600',
-    color: '#f3f4f6',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   emptyState: {
     display: 'flex',
@@ -199,9 +263,9 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '16px',
-    background: 'rgba(30, 41, 59, 0.2)',
-    border: '1px solid rgba(255, 255, 255, 0.04)',
-    borderRadius: '8px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
     flexWrap: 'wrap',
     gap: '16px',
   },
@@ -214,27 +278,40 @@ const styles = {
     width: '40px',
     height: '40px',
     borderRadius: '50%',
-    background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
-    color: 'white',
+    background: 'var(--primary-neon)',
+    border: '2px solid var(--ink)',
+    color: 'var(--text-inverse)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: '600',
+    fontWeight: '700',
     fontSize: '16px',
+    fontFamily: 'var(--font-display)',
+    flexShrink: 0,
   },
   name: {
     fontSize: '15px',
     fontWeight: '600',
-    color: '#f3f4f6',
+    color: 'var(--text-strong)',
   },
   email: {
     fontSize: '13px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
   actions: {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
+  },
+  roleSelect: {
+    padding: '8px 10px',
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
+    fontSize: '13px',
+    fontWeight: '600',
+    outline: 'none',
   },
   approveBtn: {
     padding: '8px 14px',
@@ -247,6 +324,6 @@ const styles = {
   loading: {
     textAlign: 'center',
     padding: '50px 0',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   }
 };

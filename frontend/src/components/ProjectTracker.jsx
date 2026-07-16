@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { 
-  FolderKanban, Plus, MessageSquare, Clock, User as UserIcon, 
-  ArrowRight, FileText, CheckCircle2, ChevronRight, X
+import {
+  FolderKanban, Plus, MessageSquare, Clock, User as UserIcon,
+  ArrowRight, FileText, CheckCircle2, ChevronRight, X, Users, UserPlus
 } from 'lucide-react';
+import { canManageProjects, canManageMembers } from '../utils/roles';
 
 const PROJECT_STATUSES = ["Intake", "Reviewing", "Testing", "Blocked", "Completed", "Archived"];
 
@@ -17,7 +18,9 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [activeProject, setActiveProject] = useState(null);
   const [projectComments, setProjectComments] = useState([]);
   const [newCommentText, setNewCommentText] = useState('');
-  
+  const [projectMembers, setProjectMembers] = useState([]);
+  const [addMemberId, setAddMemberId] = useState('');
+
   // Form fields
   const [projName, setProjName] = useState('');
   const [projKey, setProjKey] = useState('');
@@ -28,6 +31,8 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [versionName, setVersionName] = useState('');
 
   const { token, API_URL, user } = useAuth();
+  const canEdit = canManageProjects(user.role);
+  const canEditMembers = canManageMembers(user.role);
 
   useEffect(() => {
     fetchData();
@@ -169,7 +174,61 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const handleOpenDetail = async (project) => {
     setActiveProject(project);
     setShowDetailModal(true);
+    setAddMemberId('');
     fetchProjectComments(project.id);
+    fetchProjectMembers(project.id);
+  };
+
+  const fetchProjectMembers = async (projectId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${projectId}/members`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        setProjectMembers(await response.json());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddMember = async (e) => {
+    e.preventDefault();
+    if (!addMemberId) return;
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/members`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ user_id: parseInt(addMemberId) })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to add member");
+      }
+      setAddMemberId('');
+      fetchProjectMembers(activeProject.id);
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleRemoveMember = async (userId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/members/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to remove member");
+      }
+      fetchProjectMembers(activeProject.id);
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   const fetchProjectComments = async (projectId) => {
@@ -232,12 +291,14 @@ export const ProjectTracker = ({ onSelectProject }) => {
     <div style={styles.container} className="animate-fade-in">
       <div style={styles.header}>
         <div style={styles.headerTitleSec}>
-          <FolderKanban size={24} color="#6366f1" />
+          <FolderKanban size={24} color="var(--primary-neon)" />
           <h2 style={styles.title}>QA Project Tracker</h2>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
-          <Plus size={16} /> Add QA Project
-        </button>
+        {canEdit && (
+          <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
+            <Plus size={16} /> Add QA Project
+          </button>
+        )}
       </div>
       <p style={styles.subtitle}>Track high-level QA stages of all ongoing software projects.</p>
 
@@ -282,7 +343,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
                         
                         <div style={styles.cardFooter}>
                           <div style={styles.cardStat}>
-                            <span style={{ color: stats.open > 0 ? '#3b82f6' : '#9ca3af' }}>
+                            <span style={{ color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}>
                               Bugs: <strong>{stats.open}</strong>/{stats.total}
                             </span>
                           </div>
@@ -457,14 +518,17 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 <h4 style={styles.detailTitle}>QA status</h4>
                 <div style={styles.statusButtonsGroup}>
                   {PROJECT_STATUSES.map(s => (
-                    <button 
+                    <button
                       key={s}
-                      onClick={() => handleStatusChange(activeProject.id, s)}
+                      disabled={!canEdit}
+                      onClick={() => canEdit && handleStatusChange(activeProject.id, s)}
                       style={{
                         ...styles.statusSelectorBtn,
-                        borderColor: activeProject.status === s ? `var(--status-${s.toLowerCase()})` : 'rgba(255, 255, 255, 0.08)',
-                        background: activeProject.status === s ? `rgba(255, 255, 255, 0.04)` : 'transparent',
-                        color: activeProject.status === s ? '#fff' : '#9ca3af'
+                        borderColor: activeProject.status === s ? `var(--status-${s.toLowerCase()})` : 'var(--glass-border)',
+                        background: activeProject.status === s ? 'var(--surface-hover)' : 'transparent',
+                        color: activeProject.status === s ? 'var(--text-strong)' : 'var(--text-muted)',
+                        cursor: canEdit ? 'pointer' : 'default',
+                        opacity: canEdit ? 1 : 0.7,
                       }}
                     >
                       <span style={{
@@ -480,6 +544,52 @@ export const ProjectTracker = ({ onSelectProject }) => {
               <div style={styles.detailSection}>
                 <h4 style={styles.detailTitle}>QA Project Scope</h4>
                 <p style={styles.detailDescText}>{activeProject.description || "No description provided."}</p>
+              </div>
+
+              {/* Team / Project Members Section */}
+              <div style={styles.detailSection}>
+                <h4 style={styles.detailTitle}>
+                  <Users size={16} style={{ marginRight: '6px' }} />
+                  Team ({projectMembers.length})
+                </h4>
+                <div style={styles.teamList}>
+                  {projectMembers.length === 0 ? (
+                    <p style={styles.noComments}>No team members assigned yet.</p>
+                  ) : (
+                    projectMembers.map(m => (
+                      <div key={m.id} style={styles.teamRow}>
+                        <span style={styles.teamName}>{m.user.full_name}</span>
+                        <span style={styles.teamRole}>{m.user.role}</span>
+                        {canEditMembers && (
+                          <button
+                            style={styles.teamRemoveBtn}
+                            onClick={() => handleRemoveMember(m.user_id)}
+                            title="Remove from project"
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+                {canEditMembers && (
+                  <form onSubmit={handleAddMember} style={styles.addMemberForm}>
+                    <select
+                      value={addMemberId}
+                      onChange={(e) => setAddMemberId(e.target.value)}
+                      style={{ ...styles.modalSelect, flex: 1 }}
+                    >
+                      <option value="">Add a team member...</option>
+                      {users
+                        .filter(u => !projectMembers.some(m => m.user_id === u.id))
+                        .map(u => <option key={u.id} value={u.id}>{u.full_name} ({u.role})</option>)}
+                    </select>
+                    <button type="submit" className="btn-secondary" style={styles.addMemberBtn} disabled={!addMemberId}>
+                      <UserPlus size={14} /> Add
+                    </button>
+                  </form>
+                )}
               </div>
 
               {/* Status Comments / Daily Updates Section */}
@@ -548,11 +658,12 @@ const styles = {
   },
   title: {
     fontSize: '24px',
-    fontWeight: '600',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-strong)',
   },
   subtitle: {
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     fontSize: '14px',
     marginBottom: '24px',
   },
@@ -587,17 +698,18 @@ const styles = {
   },
   columnTitle: {
     fontSize: '14px',
-    fontWeight: '600',
-    color: '#e2e8f0',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   columnCount: {
     fontSize: '12px',
-    background: 'rgba(255, 255, 255, 0.06)',
-    padding: '2px 8px',
-    borderRadius: '9999px',
-    color: '#94a3b8',
-    fontWeight: '500',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    padding: '1px 8px',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-muted)',
+    fontWeight: '700',
   },
   columnContent: {
     display: 'flex',
@@ -608,24 +720,20 @@ const styles = {
   },
   emptyColumnText: {
     textAlign: 'center',
-    color: '#475569',
+    color: 'var(--text-subtle)',
     fontSize: '13px',
     padding: '20px 0',
-    border: '1px dashed rgba(255, 255, 255, 0.03)',
-    borderRadius: '8px',
+    border: '2px dashed var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
   },
   card: {
-    background: 'rgba(30, 41, 59, 0.25)',
-    border: '1px solid rgba(255, 255, 255, 0.04)',
-    borderRadius: '8px',
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
     padding: '16px',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     position: 'relative',
-    '&:hover': {
-      borderColor: 'rgba(99, 102, 241, 0.4)',
-      transform: 'translateY(-2px)',
-    }
   },
   cardHeader: {
     display: 'flex',
@@ -636,26 +744,26 @@ const styles = {
   cardKey: {
     fontSize: '11px',
     fontWeight: '700',
-    color: '#818cf8',
-    background: 'rgba(129, 140, 248, 0.1)',
+    color: 'var(--primary-neon)',
+    background: 'var(--primary-soft)',
     padding: '2px 6px',
-    borderRadius: '4px',
+    borderRadius: 'var(--border-radius-sm)',
   },
   cardLead: {
     fontSize: '11px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     display: 'flex',
     alignItems: 'center',
   },
   cardName: {
     fontSize: '15px',
-    fontWeight: '600',
-    color: '#f3f4f6',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
     marginBottom: '6px',
   },
   cardDesc: {
     fontSize: '13px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     lineHeight: '1.4',
     marginBottom: '12px',
   },
@@ -663,7 +771,7 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderTop: '1px solid rgba(255, 255, 255, 0.04)',
+    borderTop: '2px solid var(--glass-border)',
     paddingTop: '10px',
     marginBottom: '10px',
   },
@@ -671,13 +779,13 @@ const styles = {
     fontSize: '12px',
   },
   blockerBadge: {
-    background: 'rgba(239, 68, 68, 0.15)',
-    color: '#fca5a5',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
+    background: 'var(--danger-bg)',
+    color: 'var(--danger-text)',
+    border: '2px solid var(--danger-border)',
     padding: '2px 6px',
-    borderRadius: '4px',
+    borderRadius: 'var(--border-radius-sm)',
     fontSize: '11px',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   quickActions: {
     display: 'flex',
@@ -686,87 +794,90 @@ const styles = {
   quickGoBtn: {
     padding: '4px 8px',
     fontSize: '11px',
-    borderRadius: '4px',
+    borderRadius: 'var(--border-radius-sm)',
   },
   loading: {
     textAlign: 'center',
     padding: '100px 0',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
-  
+
   // Modal Styles
   modalHeader: {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '16px',
     marginBottom: '20px',
   },
   modalTitle: {
     fontSize: '20px',
-    fontWeight: '600',
-    color: '#f3f4f6',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   modalSubheading: {
     fontSize: '12px',
-    color: '#818cf8',
-    fontWeight: '600',
+    color: 'var(--primary-neon)',
+    fontWeight: '700',
     textTransform: 'uppercase',
   },
   closeBtn: {
     background: 'none',
     border: 'none',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     cursor: 'pointer',
-    '&:hover': { color: '#f3f4f6' }
   },
   modalForm: {
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
   },
+  inputGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
   modalLabel: {
     fontSize: '13px',
-    fontWeight: '500',
-    color: '#9ca3af',
-    marginBottom: '6px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
   },
   modalInput: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
   },
   modalSelect: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
   },
   modalTextarea: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     resize: 'vertical',
     fontSize: '14px',
   },
   existingProjectNote: {
     padding: '10px 12px',
-    border: '1px solid rgba(99, 102, 241, 0.18)',
-    borderRadius: '6px',
-    background: 'rgba(99, 102, 241, 0.08)',
-    color: '#cbd5e1',
+    border: '2px solid var(--primary-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    background: 'var(--primary-soft)',
+    color: 'var(--text-main)',
     fontSize: '13px',
   },
   row: {
@@ -792,12 +903,12 @@ const styles = {
   },
   detailTitle: {
     fontSize: '14px',
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
     marginBottom: '10px',
     display: 'flex',
     alignItems: 'center',
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
   },
   statusButtonsGroup: {
     display: 'flex',
@@ -809,26 +920,27 @@ const styles = {
     alignItems: 'center',
     gap: '6px',
     padding: '6px 12px',
-    border: '1px solid',
-    borderRadius: '6px',
+    borderWidth: '2px',
+    borderStyle: 'solid',
+    borderRadius: 'var(--border-radius-sm)',
     fontSize: '13px',
-    fontWeight: '500',
+    fontWeight: '600',
     cursor: 'pointer',
     transition: 'all 0.15s ease',
   },
   statusDot: {
-    width: '6px',
-    height: '6px',
+    width: '8px',
+    height: '8px',
     borderRadius: '50%',
   },
   detailDescText: {
     fontSize: '14px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
     lineHeight: '1.6',
-    background: 'rgba(255, 255, 255, 0.02)',
+    background: 'var(--bg-tertiary)',
     padding: '12px',
-    borderRadius: '6px',
-    border: '1px solid rgba(255, 255, 255, 0.04)',
+    borderRadius: 'var(--border-radius-sm)',
+    border: '2px solid var(--glass-border)',
   },
   commentForm: {
     display: 'flex',
@@ -838,10 +950,10 @@ const styles = {
   },
   commentInput: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
     resize: 'none',
@@ -857,34 +969,80 @@ const styles = {
     gap: '10px',
     maxHeight: '200px',
     overflowY: 'auto',
-    borderTop: '1px solid rgba(255, 255, 255, 0.04)',
+    borderTop: '2px solid var(--glass-border)',
     paddingTop: '16px',
   },
   noComments: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
     fontSize: '13px',
     textAlign: 'center',
     padding: '10px 0',
   },
   commentRow: {
-    background: 'rgba(255, 255, 255, 0.02)',
+    background: 'var(--bg-tertiary)',
     padding: '10px 12px',
-    borderRadius: '6px',
-    border: '1px solid rgba(255, 255, 255, 0.02)',
+    borderRadius: 'var(--border-radius-sm)',
+    border: '2px solid var(--glass-border)',
   },
   commentMeta: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '12px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
     marginBottom: '4px',
   },
   commentTime: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
   },
   commentText: {
     fontSize: '13px',
-    color: '#cbd5e1',
+    color: 'var(--text-muted)',
     lineHeight: '1.4',
-  }
+  },
+
+  // Team section
+  teamList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    marginBottom: '12px',
+  },
+  teamRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '8px 12px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+  },
+  teamName: {
+    flex: 1,
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--text-main)',
+  },
+  teamRole: {
+    fontSize: '11px',
+    fontWeight: '700',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+  },
+  teamRemoveBtn: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-subtle)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+  },
+  addMemberForm: {
+    display: 'flex',
+    gap: '8px',
+  },
+  addMemberBtn: {
+    padding: '8px 12px',
+    fontSize: '13px',
+    whiteSpace: 'nowrap',
+  },
 };

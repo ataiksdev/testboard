@@ -96,20 +96,20 @@ export const ReportsDashboard = () => {
       {/* Date Selectors and Action Bar (Hidden when printing) */}
       <div style={styles.actionBar} className="no-print">
         <div style={styles.headerTitleSec}>
-          <FileText size={24} color="#6366f1" />
+          <FileText size={24} color="var(--primary-neon)" />
           <h2 style={styles.title}>QA Periodic Reports</h2>
         </div>
 
         <div style={styles.controls}>
           <div style={styles.datePickerGroup}>
-            <Calendar size={16} color="#9ca3af" />
-            <input 
-              type="date" 
-              value={startDate} 
+            <Calendar size={16} color="var(--text-muted)" />
+            <input
+              type="date"
+              value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
               style={styles.dateInput}
             />
-            <span style={{ color: '#6b7280' }}>to</span>
+            <span style={{ color: 'var(--text-subtle)' }}>to</span>
             <input 
               type="date" 
               value={endDate} 
@@ -144,8 +144,8 @@ export const ReportsDashboard = () => {
               >
                 <Download size={14} /> Projects CSV
               </button>
-              <button 
-                className="btn-primary animate-pulse-glow" 
+              <button
+                className="btn-primary"
                 onClick={triggerPrint}
                 style={styles.actionBtn}
               >
@@ -170,7 +170,7 @@ export const ReportsDashboard = () => {
                 onClick={handleCopySummary}
                 style={styles.copyBtn}
               >
-                {copied ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                {copied ? <Check size={14} color="var(--primary-neon)" /> : <Copy size={14} />}
                 {copied ? "Copied!" : "Copy Text"}
               </button>
             </div>
@@ -186,12 +186,12 @@ export const ReportsDashboard = () => {
             </div>
             <div className="glass-panel" style={styles.metricCard}>
               <span style={styles.metricLabel}>Bugs Resolved</span>
-              <span style={{ ...styles.metricValue, color: '#10b981' }}>{reportData.bug_metrics.resolved_bugs}</span>
+              <span style={{ ...styles.metricValue, color: 'var(--primary-neon)' }}>{reportData.bug_metrics.resolved_bugs}</span>
               <span style={styles.metricSubtext}>QA closed / resolved</span>
             </div>
             <div className="glass-panel" style={styles.metricCard}>
               <span style={styles.metricLabel}>Mean Time to Resolve</span>
-              <span style={{ ...styles.metricValue, color: '#3b82f6' }}>
+              <span style={{ ...styles.metricValue, color: 'var(--accent-mustard)' }}>
                 {reportData.bug_metrics.mttr_hours}
                 <span style={{ fontSize: '18px', fontWeight: '500', marginLeft: '4px' }}>hrs</span>
               </span>
@@ -199,9 +199,9 @@ export const ReportsDashboard = () => {
             </div>
             <div className="glass-panel" style={styles.metricCard}>
               <span style={styles.metricLabel}>Blockers Encountered</span>
-              <span style={{ 
-                ...styles.metricValue, 
-                color: reportData.bug_metrics.blocker_bugs > 0 ? '#ef4444' : 'var(--text-main)' 
+              <span style={{
+                ...styles.metricValue,
+                color: reportData.bug_metrics.blocker_bugs > 0 ? 'var(--accent-rust)' : 'var(--text-main)'
               }}>
                 {reportData.bug_metrics.blocker_bugs}
               </span>
@@ -212,7 +212,7 @@ export const ReportsDashboard = () => {
           {/* Project Movement Section */}
           <div className="glass-panel" style={styles.sectionPanel}>
             <h3 style={styles.panelTitle}>
-              <RefreshCw size={18} color="#6366f1" style={{ marginRight: '8px' }} />
+              <RefreshCw size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
               Project Transitions Pipeline
             </h3>
             {reportData.movements.length === 0 ? (
@@ -225,11 +225,11 @@ export const ReportsDashboard = () => {
                       <strong>{m.project_name}</strong>
                     </div>
                     <div style={styles.moveAction}>
-                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.from_status.toLowerCase()})`, background: `rgba(255, 255, 255, 0.02)` }}>
+                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.from_status.toLowerCase()})`, borderColor: `var(--status-${m.from_status.toLowerCase()})` }}>
                         {m.from_status}
                       </span>
-                      <ArrowRight size={14} color="#6b7280" />
-                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.to_status.toLowerCase()})`, background: `rgba(255, 255, 255, 0.04)` }}>
+                      <ArrowRight size={14} color="var(--text-subtle)" />
+                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.to_status.toLowerCase()})`, borderColor: `var(--status-${m.to_status.toLowerCase()})` }}>
                         {m.to_status}
                       </span>
                     </div>
@@ -248,7 +248,7 @@ export const ReportsDashboard = () => {
           {/* Blockers Encountered Details */}
           <div className="glass-panel" style={styles.sectionPanel}>
             <h3 style={styles.panelTitle}>
-              <AlertTriangle size={18} color="#ef4444" style={{ marginRight: '8px' }} />
+              <AlertTriangle size={18} color="var(--accent-rust)" style={{ marginRight: '8px' }} />
               Active Blockers Logs
             </h3>
             {reportData.blockers_encountered.length === 0 ? (
@@ -268,7 +268,7 @@ export const ReportsDashboard = () => {
                 <tbody>
                   {reportData.blockers_encountered.map(bug => (
                     <tr key={bug.id} style={styles.tr}>
-                      <td style={{ ...styles.td, fontWeight: '700', color: '#818cf8' }}>
+                      <td style={{ ...styles.td, fontWeight: '700', color: 'var(--primary-neon)' }}>
                         {bug.project ? bug.project.key : 'BUG'}-{bug.id}
                       </td>
                       <td style={styles.td}>{bug.title}</td>
@@ -293,7 +293,7 @@ export const ReportsDashboard = () => {
           {/* EOD Comments Summary */}
           <div className="glass-panel" style={styles.sectionPanel}>
             <h3 style={styles.panelTitle}>
-              <MessageSquare size={18} color="#0ea5e9" style={{ marginRight: '8px' }} />
+              <MessageSquare size={18} color="var(--primary-accent)" style={{ marginRight: '8px' }} />
               Logged Status updates / Comments
             </h3>
             {reportData.comments.length === 0 ? (
@@ -342,8 +342,9 @@ const styles = {
   },
   title: {
     fontSize: '24px',
-    fontWeight: '600',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-strong)',
   },
   controls: {
     display: 'flex',
@@ -355,19 +356,18 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    background: 'rgba(30, 41, 59, 0.4)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
     padding: '6px 12px',
   },
   dateInput: {
     background: 'transparent',
     border: 'none',
-    color: '#f3f4f6',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
     cursor: 'pointer',
-    colorScheme: 'dark',
   },
   actionBtn: {
     padding: '8px 14px',
@@ -376,7 +376,7 @@ const styles = {
   loading: {
     textAlign: 'center',
     padding: '80px 0',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
   reportLayout: {
     display: 'flex',
@@ -385,7 +385,7 @@ const styles = {
   },
   summaryBox: {
     padding: '24px',
-    borderLeft: '4px solid #6366f1',
+    borderLeft: '6px solid var(--primary-neon)',
   },
   summaryHeader: {
     display: 'flex',
@@ -395,16 +395,16 @@ const styles = {
   },
   sectionTitleDisplay: {
     fontSize: '16px',
-    fontWeight: '600',
-    color: '#cbd5e1',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   copyBtn: {
     padding: '4px 10px',
     fontSize: '12px',
   },
   summaryText: {
-    color: '#e2e8f0',
+    color: 'var(--text-main)',
     fontSize: '15px',
     lineHeight: '1.6',
   },
@@ -423,37 +423,37 @@ const styles = {
   metricLabel: {
     fontSize: '13px',
     fontWeight: '600',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     marginBottom: '12px',
   },
   metricValue: {
     fontSize: '36px',
     fontWeight: '700',
-    color: '#f3f4f6',
+    color: 'var(--text-strong)',
     lineHeight: '1',
     marginBottom: '8px',
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
   },
   metricSubtext: {
     fontSize: '11px',
-    color: '#6b7280',
+    color: 'var(--text-subtle)',
   },
   sectionPanel: {
     padding: '24px',
   },
   panelTitle: {
     fontSize: '16px',
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
     display: 'flex',
     alignItems: 'center',
     marginBottom: '20px',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '12px',
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
   },
   emptyText: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
     fontSize: '14px',
     textAlign: 'center',
     padding: '20px 0',
@@ -468,9 +468,9 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '12px 16px',
-    background: 'rgba(255, 255, 255, 0.01)',
-    border: '1px solid rgba(255, 255, 255, 0.02)',
-    borderRadius: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
     flexWrap: 'wrap',
     gap: '12px',
   },
@@ -485,20 +485,22 @@ const styles = {
   },
   moveStatusBadge: {
     fontSize: '12px',
-    fontWeight: '600',
-    padding: '4px 10px',
-    borderRadius: '6px',
-    border: '1px solid rgba(255, 255, 255, 0.02)',
+    fontWeight: '700',
+    padding: '3px 10px',
+    borderRadius: 'var(--border-radius-sm)',
+    borderWidth: '2px',
+    borderStyle: 'solid',
+    background: 'var(--bg-elevated)',
   },
   moveMeta: {
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
     fontSize: '13px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
   },
   moveDate: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
   },
   table: {
     width: '100%',
@@ -508,26 +510,23 @@ const styles = {
   th: {
     textAlign: 'left',
     padding: '10px 12px',
-    borderBottom: '2px solid rgba(255, 255, 255, 0.06)',
-    color: '#9ca3af',
-    fontWeight: '600',
+    borderBottom: '2px solid var(--glass-border)',
+    color: 'var(--text-muted)',
+    fontWeight: '700',
   },
   tr: {
-    borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-    '&:hover': {
-      background: 'rgba(255, 255, 255, 0.01)',
-    }
+    borderBottom: '2px solid var(--glass-border)',
   },
   td: {
     padding: '12px',
-    color: '#cbd5e1',
+    color: 'var(--text-muted)',
   },
   blockSev: {
     fontSize: '10px',
     fontWeight: '700',
     padding: '2px 6px',
-    borderRadius: '4px',
-    color: 'white',
+    borderRadius: 'var(--border-radius-sm)',
+    color: '#12100d',
   },
   commentsContainer: {
     display: 'flex',
@@ -535,33 +534,33 @@ const styles = {
     gap: '12px',
   },
   commentCard: {
-    background: 'rgba(255, 255, 255, 0.01)',
-    border: '1px solid rgba(255, 255, 255, 0.02)',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
     padding: '16px',
-    borderRadius: '8px',
+    borderRadius: 'var(--border-radius-sm)',
   },
   commentHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     fontSize: '12px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
     marginBottom: '8px',
-    borderBottom: '1px dashed rgba(255, 255, 255, 0.04)',
+    borderBottom: '2px dashed var(--glass-border)',
     paddingBottom: '6px',
   },
   commentSource: {
-    background: 'rgba(99, 102, 241, 0.1)',
-    color: '#818cf8',
+    background: 'var(--primary-soft)',
+    color: 'var(--primary-neon)',
     padding: '1px 6px',
-    borderRadius: '4px',
-    fontWeight: '600',
+    borderRadius: 'var(--border-radius-sm)',
+    fontWeight: '700',
   },
   commentDate: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
   },
   commentBody: {
-    color: '#e2e8f0',
+    color: 'var(--text-main)',
     fontSize: '13px',
     lineHeight: '1.5',
   }

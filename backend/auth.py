@@ -54,14 +54,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
-        
+
     # Check if user access request is approved
     if user.role == "Pending":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your access request is pending admin approval."
         )
-        
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deactivated. Contact an administrator."
+        )
+
     return user
 
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
@@ -71,3 +77,13 @@ def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="Operation not permitted. Admin role required."
         )
     return current_user
+
+def require_roles(*roles: str):
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Operation not permitted for role '{current_user.role}'."
+            )
+        return current_user
+    return dependency

@@ -14,19 +14,22 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 import os
 
-from backend.database import engine, Base, get_db
-from backend.models import User, Project, Version, Bug, Comment, ActivityLog
+from backend.database import engine, Base, get_db, SessionLocal
+from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember
 from backend.schemas import (
-    UserCreate, UserOut, UserUpdate, Token, 
+    UserCreate, UserOut, UserUpdate, UserApprove, Token,
+    ASSIGNABLE_ROLES,
     ProjectCreate, ProjectOut, ProjectUpdate,
+    ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     BugCreate, BugOut, BugUpdate,
     CommentCreate, CommentOut,
+    ActivityLogOut,
     ReportDataOut
 )
 from backend.auth import (
     get_password_hash, verify_password, create_access_token,
-    get_current_user, get_current_admin
+    get_current_user, get_current_admin, require_roles
 )
 from backend.reporter import (
     calculate_qa_metrics, generate_csv_bugs_report, generate_csv_projects_report
@@ -43,14 +46,41 @@ def ensure_sqlite_schema():
     if not str(engine.url).startswith("sqlite"):
         return
     with engine.begin() as connection:
-        columns = {
+        bug_columns = {
             row[1]
             for row in connection.execute(text("PRAGMA table_info(bugs)")).fetchall()
         }
-        if "screenshot_url" not in columns:
+        if "screenshot_url" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN screenshot_url VARCHAR"))
 
+        user_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(users)")).fetchall()
+        }
+        if "is_active" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+
+        # Migrate legacy "Member" role to the new "QA" role
+        connection.execute(text("UPDATE users SET role = 'QA' WHERE role = 'Member'"))
+
 ensure_sqlite_schema()
+
+def backfill_project_leads_as_members():
+    db = SessionLocal()
+    try:
+        projects_with_leads = db.query(Project).filter(Project.lead_id.isnot(None)).all()
+        for project in projects_with_leads:
+            exists = db.query(ProjectMember).filter(
+                ProjectMember.project_id == project.id,
+                ProjectMember.user_id == project.lead_id
+            ).first()
+            if not exists:
+                db.add(ProjectMember(project_id=project.id, user_id=project.lead_id))
+        db.commit()
+    finally:
+        db.close()
+
+backfill_project_leads_as_members()
 
 app = FastAPI(title="TestBoard QA Tracker API", version="1.0.0")
 
@@ -71,11 +101,21 @@ app.add_middleware(
 def require_active_user(db: Session, user_id: int, detail: str = "User not found") -> User:
     user = db.query(User).filter(
         User.id == user_id,
-        User.role.in_(["Member", "Admin"])
+        User.role.in_(["Admin", "PM", "Dev", "QA"]),
+        User.is_active == True
     ).first()
     if not user:
         raise HTTPException(status_code=404, detail=detail)
     return user
+
+def ensure_project_membership(db: Session, project_id: int, user_id: int):
+    exists = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == user_id
+    ).first()
+    if not exists:
+        db.add(ProjectMember(project_id=project_id, user_id=user_id))
+        db.commit()
 
 def require_project(db: Session, project_id: int) -> Project:
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -159,7 +199,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your registration access request is pending Admin approval."
         )
-        
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deactivated. Contact an administrator."
+        )
+
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -175,11 +221,13 @@ def get_pending_users(admin: User = Depends(get_current_admin), db: Session = De
     return db.query(User).filter(User.role == "Pending").all()
 
 @app.post("/api/admin/users/{user_id}/approve", response_model=UserOut)
-def approve_user(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+def approve_user(user_id: int, approval: UserApprove, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if approval.role not in ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=400, detail=f"Role must be one of {ASSIGNABLE_ROLES}")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    user.role = "Member"
+    user.role = approval.role
     db.commit()
     db.refresh(user)
     return user
@@ -195,24 +243,87 @@ def reject_user(user_id: int, admin: User = Depends(get_current_admin), db: Sess
     db.commit()
     return {"message": "Access request rejected and user deleted successfully"}
 
+@app.get("/api/admin/users", response_model=List[UserOut])
+def list_all_users(
+    role: Optional[str] = None,
+    search: Optional[str] = None,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    query = db.query(User)
+    if role:
+        query = query.filter(User.role == role)
+    if search:
+        like = f"%{search}%"
+        query = query.filter((User.full_name.ilike(like)) | (User.email.ilike(like)))
+    return query.order_by(User.full_name).all()
+
+def _count_active_admins(db: Session, exclude_user_id: Optional[int] = None) -> int:
+    query = db.query(User).filter(User.role == "Admin", User.is_active == True)
+    if exclude_user_id is not None:
+        query = query.filter(User.id != exclude_user_id)
+    return query.count()
+
+@app.put("/api/admin/users/{user_id}", response_model=UserOut)
+def update_user_admin(user_id: int, update: UserUpdate, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    demoting_admin = update.role is not None and update.role != "Admin" and user.role == "Admin"
+    deactivating_admin = update.is_active is False and user.role == "Admin" and user.is_active
+
+    if (demoting_admin or deactivating_admin) and _count_active_admins(db, exclude_user_id=user.id) == 0:
+        raise HTTPException(status_code=400, detail="Cannot remove the last active Admin")
+
+    if update.role is not None:
+        if update.role not in ASSIGNABLE_ROLES:
+            raise HTTPException(status_code=400, detail=f"Role must be one of {ASSIGNABLE_ROLES}")
+        user.role = update.role
+    if update.full_name is not None:
+        user.full_name = update.full_name
+    if update.is_active is not None:
+        user.is_active = update.is_active
+
+    db.commit()
+    db.refresh(user)
+    return user
+
+@app.get("/api/admin/users/{user_id}/activity", response_model=List[ActivityLogOut])
+def get_user_activity(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if not db.query(User).filter(User.id == user_id).first():
+        raise HTTPException(status_code=404, detail="User not found")
+    return db.query(ActivityLog).filter(ActivityLog.user_id == user_id).order_by(ActivityLog.created_at.desc()).limit(100).all()
+
+@app.get("/api/admin/users/{user_id}/projects", response_model=List[UserProjectOut])
+def get_user_projects(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if not db.query(User).filter(User.id == user_id).first():
+        raise HTTPException(status_code=404, detail="User not found")
+    return (
+        db.query(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .filter(ProjectMember.user_id == user_id)
+        .all()
+    )
+
 
 # ==================== USERS ENDPOINTS ====================
 
 @app.get("/api/users", response_model=List[UserOut])
 def get_all_active_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Returns approved users (Members and Admins) for assignments
-    return db.query(User).filter(User.role.in_(["Member", "Admin"])).all()
+    # Returns assignable users (excludes Guest/Pending) for lead/owner pickers
+    return db.query(User).filter(User.role.in_(["Admin", "PM", "Dev", "QA"]), User.is_active == True).all()
 
 
 # ==================== PROJECTS ENDPOINTS ====================
 
 @app.post("/api/projects", response_model=ProjectOut)
-def create_project(project_in: ProjectCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_project(project_in: ProjectCreate, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
     # Check key uniqueness
     dup_key = db.query(Project).filter(Project.key == project_in.key.upper()).first()
     if dup_key:
         raise HTTPException(status_code=400, detail="Project key already exists")
-    
+
     # Check name uniqueness
     dup_name = db.query(Project).filter(Project.name == project_in.name).first()
     if dup_name:
@@ -231,6 +342,8 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(get_c
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
+
+    ensure_project_membership(db, new_project.id, lead_id)
 
     # Log activity
     log = ActivityLog(
@@ -256,13 +369,13 @@ def get_project(project_id: int, current_user: User = Depends(get_current_user),
     return project
 
 @app.put("/api/projects/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, project_in: ProjectUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_project(project_id: int, project_in: ProjectUpdate, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     old_status = project.status
-    
+
     # Apply updates
     if project_in.name is not None:
         project.name = project_in.name
@@ -275,9 +388,12 @@ def update_project(project_id: int, project_in: ProjectUpdate, current_user: Use
     if project_in.lead_id is not None:
         require_active_user(db, project_in.lead_id, detail="Project lead not found")
         project.lead_id = project_in.lead_id
-        
+
     db.commit()
     db.refresh(project)
+
+    if project_in.lead_id is not None:
+        ensure_project_membership(db, project.id, project.lead_id)
     
     # Log status change if applicable
     if project_in.status is not None and old_status != project.status:
@@ -297,7 +413,7 @@ def update_project(project_id: int, project_in: ProjectUpdate, current_user: Use
 # ==================== VERSIONS ENDPOINTS ====================
 
 @app.post("/api/projects/{project_id}/versions", response_model=VersionOut)
-def create_version(project_id: int, version_in: VersionBase, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_version(project_id: int, version_in: VersionBase, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
     # Verify project exists
     require_project(db, project_id)
         
@@ -318,10 +434,48 @@ def list_versions(project_id: int, current_user: User = Depends(get_current_user
     return db.query(Version).filter(Version.project_id == project_id).all()
 
 
+# ==================== PROJECT MEMBERS ENDPOINTS ====================
+
+@app.get("/api/projects/{project_id}/members", response_model=List[ProjectMemberOut])
+def list_project_members(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    return db.query(ProjectMember).filter(ProjectMember.project_id == project_id).all()
+
+@app.post("/api/projects/{project_id}/members", response_model=ProjectMemberOut)
+def add_project_member(project_id: int, member_in: ProjectMemberCreate, current_user: User = Depends(require_roles("Admin", "PM")), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    require_active_user(db, member_in.user_id, detail="User not found")
+
+    existing = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == member_in.user_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="User is already a member of this project")
+
+    member = ProjectMember(project_id=project_id, user_id=member_in.user_id)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return member
+
+@app.delete("/api/projects/{project_id}/members/{user_id}")
+def remove_project_member(project_id: int, user_id: int, current_user: User = Depends(require_roles("Admin", "PM")), db: Session = Depends(get_db)):
+    member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == user_id
+    ).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Membership not found")
+    db.delete(member)
+    db.commit()
+    return {"message": "Member removed from project"}
+
+
 # ==================== BUGS ENDPOINTS ====================
 
 @app.post("/api/bugs", response_model=BugOut)
-def create_bug(bug_in: BugCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_bug(bug_in: BugCreate, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
     # Verify project exists
     require_project(db, bug_in.project_id)
     if bug_in.version_id is not None:
@@ -366,7 +520,7 @@ def list_bugs(project_id: Optional[int] = None, current_user: User = Depends(get
     return query.all()
 
 @app.put("/api/bugs/{bug_id}", response_model=BugOut)
-def update_bug(bug_id: int, bug_in: BugUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_bug(bug_id: int, bug_in: BugUpdate, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
     bug = db.query(Bug).filter(Bug.id == bug_id).first()
     if not bug:
         raise HTTPException(status_code=404, detail="Bug not found")

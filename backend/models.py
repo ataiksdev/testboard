@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -10,7 +10,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
-    role = Column(String, default="Pending")  # Pending, Member, Admin
+    role = Column(String, default="Pending")  # Pending, Admin, PM, Dev, QA, Guest
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Relationships
@@ -19,6 +20,7 @@ class User(Base):
     assigned_bugs = relationship("Bug", back_populates="owner", foreign_keys="Bug.owner_id")
     comments = relationship("Comment", back_populates="user")
     activities = relationship("ActivityLog", back_populates="user")
+    project_memberships = relationship("ProjectMember", back_populates="user", cascade="all, delete-orphan")
 
 
 class Project(Base):
@@ -38,6 +40,7 @@ class Project(Base):
     bugs = relationship("Bug", back_populates="project", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="project", cascade="all, delete-orphan")
     activities = relationship("ActivityLog", back_populates="project", cascade="all, delete-orphan")
+    members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
 
 
 class Version(Base):
@@ -113,3 +116,25 @@ class ActivityLog(Base):
     user = relationship("User", back_populates="activities")
     project = relationship("Project", back_populates="activities")
     bug = relationship("Bug", back_populates="activities")
+
+    @property
+    def project_name(self):
+        return self.project.name if self.project else None
+
+    @property
+    def bug_title(self):
+        return self.bug.title if self.bug else None
+
+
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    project = relationship("Project", back_populates="members")
+    user = relationship("User", back_populates="project_memberships")

@@ -35,18 +35,21 @@ export const AuthPages = () => {
 
   return (
     <div style={styles.container}>
-      <div style={styles.radialGlow} />
-      
+      <div style={styles.shapeSquare} />
+      <div style={styles.shapeCircle} />
+
       <div className="glass-panel" style={styles.card}>
         <div style={styles.logoSection}>
-          <Terminal size={32} color="#6366f1" style={{ marginRight: '8px' }} />
+          <div style={styles.logoMark}>
+            <Terminal size={20} color="var(--ink)" />
+          </div>
           <h1 style={styles.title}>TestBoard</h1>
         </div>
         <p style={styles.subtitle}>QA Project Tracker & Status Reporting</p>
 
         {accessPending ? (
           <div style={styles.pendingContainer} className="animate-slide-up">
-            <CheckCircle size={48} color="#10b981" style={{ marginBottom: '16px' }} />
+            <CheckCircle size={48} color="var(--primary-neon)" style={{ marginBottom: '16px' }} />
             <h2 style={styles.pendingTitle}>
               {regSuccess ? "Access Request Submitted" : "Access Request Pending"}
             </h2>
@@ -118,9 +121,9 @@ export const AuthPages = () => {
               </div>
             </div>
 
-            <button 
-              type="submit" 
-              className="btn-primary animate-pulse-glow" 
+            <button
+              type="submit"
+              className="btn-primary"
               disabled={isLoading}
               style={styles.submitBtn}
             >
@@ -153,19 +156,34 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    background: '#080b11',
+    background: 'var(--bg-primary)',
     padding: '20px',
+    overflow: 'hidden',
   },
-  radialGlow: {
+  shapeSquare: {
     position: 'absolute',
-    width: '600px',
-    height: '600px',
-    background: 'radial-gradient(circle, rgba(99,102,241,0.15) 0%, rgba(6,182,212,0.05) 50%, rgba(0,0,0,0) 100%)',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
+    width: '220px',
+    height: '220px',
+    background: 'var(--primary-neon)',
+    border: '2px solid var(--ink)',
+    top: '-60px',
+    left: '-60px',
+    transform: 'rotate(12deg)',
     pointerEvents: 'none',
     zIndex: 1,
+    opacity: 0.9,
+  },
+  shapeCircle: {
+    position: 'absolute',
+    width: '260px',
+    height: '260px',
+    borderRadius: '50%',
+    background: 'var(--accent-mustard)',
+    bottom: '-90px',
+    right: '-90px',
+    pointerEvents: 'none',
+    zIndex: 1,
+    opacity: 0.85,
   },
   card: {
     width: '100%',
@@ -178,19 +196,29 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: '10px',
     marginBottom: '8px',
   },
+  logoMark: {
+    width: '40px',
+    height: '40px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'var(--primary-neon)',
+    border: '2px solid var(--ink)',
+    borderRadius: 'var(--border-radius-sm)',
+    flexShrink: 0,
+  },
   title: {
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
     fontSize: '28px',
     fontWeight: '700',
-    background: 'linear-gradient(135deg, #a5b4fc 0%, #818cf8 100%)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
+    color: 'var(--text-strong)',
   },
   subtitle: {
     textAlign: 'center',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     fontSize: '14px',
     marginBottom: '32px',
   },
@@ -201,10 +229,10 @@ const styles = {
   },
   formTitle: {
     fontSize: '20px',
-    fontWeight: '600',
-    color: '#f3f4f6',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
     marginBottom: '8px',
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
   },
   inputGroup: {
     display: 'flex',
@@ -213,8 +241,8 @@ const styles = {
   },
   label: {
     fontSize: '13px',
-    fontWeight: '500',
-    color: '#9ca3af',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
   },
   inputWrapper: {
     position: 'relative',
@@ -224,26 +252,26 @@ const styles = {
   inputIcon: {
     position: 'absolute',
     left: '12px',
-    color: '#6b7280',
+    color: 'var(--text-subtle)',
     pointerEvents: 'none',
   },
   input: {
     width: '100%',
     padding: '12px 12px 12px 40px',
-    background: 'rgba(30, 41, 59, 0.4)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '8px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     fontSize: '15px',
     outline: 'none',
     transition: 'border-color 0.2s',
   },
   errorAlert: {
-    background: 'rgba(239, 68, 68, 0.12)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    borderRadius: '8px',
+    background: 'var(--danger-bg)',
+    border: '2px solid var(--danger-border)',
+    borderRadius: 'var(--border-radius-sm)',
     padding: '12px',
-    color: '#fca5a5',
+    color: 'var(--danger-text)',
     fontSize: '14px',
     lineHeight: '1.4',
   },
@@ -263,9 +291,9 @@ const styles = {
   switchBtn: {
     background: 'none',
     border: 'none',
-    color: '#818cf8',
+    color: 'var(--primary-neon)',
     fontSize: '14px',
-    fontWeight: '600',
+    fontWeight: '700',
     cursor: 'pointer',
     textDecoration: 'underline',
   },
@@ -278,11 +306,12 @@ const styles = {
   },
   pendingTitle: {
     fontSize: '20px',
-    color: '#f3f4f6',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-strong)',
     marginBottom: '8px',
   },
   pendingText: {
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     fontSize: '14px',
     lineHeight: '1.6',
     marginBottom: '24px',

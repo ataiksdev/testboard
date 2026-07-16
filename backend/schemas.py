@@ -2,6 +2,8 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 
+ASSIGNABLE_ROLES = ["Admin", "PM", "Dev", "QA", "Guest"]
+
 # Token Schemas
 class Token(BaseModel):
     access_token: str
@@ -21,10 +23,15 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class UserApprove(BaseModel):
+    role: str = "QA"
 
 class UserOut(UserBase):
     id: int
     role: str
+    is_active: bool
     created_at: datetime
 
     class Config:
@@ -53,6 +60,31 @@ class ProjectOut(ProjectBase):
     lead_id: Optional[int] = None
     lead: Optional[UserOut] = None
     created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+# Project Member Schemas
+class ProjectMemberCreate(BaseModel):
+    user_id: int
+
+class ProjectMemberOut(BaseModel):
+    id: int
+    project_id: int
+    user_id: int
+    user: UserOut
+    added_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+class UserProjectOut(BaseModel):
+    id: int
+    name: str
+    key: str
+    status: str
 
     class Config:
         orm_mode = True
@@ -144,7 +176,9 @@ class ActivityLogOut(BaseModel):
     user_id: int
     user: UserOut
     project_id: Optional[int] = None
+    project_name: Optional[str] = None
     bug_id: Optional[int] = None
+    bug_title: Optional[str] = None
     activity_type: str
     old_value: Optional[str] = None
     new_value: Optional[str] = None

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { 
-  Bug as BugIcon, Plus, MessageSquare, User as UserIcon, 
+import {
+  Bug as BugIcon, Plus, MessageSquare, User as UserIcon,
   AlertTriangle, CheckCircle, Clock, X, Eye, FileText, ImagePlus, Clipboard
 } from 'lucide-react';
+import { canManageBugs } from '../utils/roles';
 
 const BUG_STATUSES = ["Open", "In Progress", "In QA", "Resolved", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -38,7 +39,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [bugScreenshotData, setBugScreenshotData] = useState('');
   const [bugScreenshotName, setBugScreenshotName] = useState('');
 
-  const { token, API_URL } = useAuth();
+  const { token, API_URL, user } = useAuth();
+  const canEdit = canManageBugs(user.role);
 
   useEffect(() => {
     if (selectedProject) {
@@ -294,12 +296,14 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       {/* Header Filters */}
       <div style={styles.header}>
         <div style={styles.headerTitleSec}>
-          <BugIcon size={24} color="#6366f1" />
+          <BugIcon size={24} color="var(--primary-neon)" />
           <h2 style={styles.title}>Bugs Kanban Board</h2>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
-          <Plus size={16} /> Log a Bug
-        </button>
+        {canEdit && (
+          <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
+            <Plus size={16} /> Log a Bug
+          </button>
+        )}
       </div>
 
       <div style={styles.filtersRow}>
@@ -362,17 +366,17 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                         <span style={{
                           ...styles.sevBadge,
                           background: `var(--sev-${bug.severity.toLowerCase()})`,
-                          color: '#fff'
+                          color: '#12100d'
                         }}>
                           {bug.severity}
                         </span>
                       </div>
-                      
+
                       <h4 style={styles.cardTitle}>{bug.title}</h4>
-                      
+
                       <div style={styles.cardFooter}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <UserIcon size={12} color="#9ca3af" />
+                          <UserIcon size={12} color="var(--text-muted)" />
                           <span style={styles.ownerText}>
                             {bug.owner ? bug.owner.full_name : 'Unassigned'}
                           </span>
@@ -486,7 +490,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   tabIndex={0}
                 >
                   <div style={styles.screenshotDropHeader}>
-                    <ImagePlus size={18} color="#818cf8" />
+                    <ImagePlus size={18} color="var(--primary-neon)" />
                     <span>Paste an image here or choose a file</span>
                   </div>
                   <input
@@ -531,8 +535,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   style={styles.checkbox}
                 />
                 <label htmlFor="create-is-blocker" style={styles.checkboxLabel}>
-                  <AlertTriangle size={14} color="#ef4444" style={{ marginRight: '4px' }} />
-                  Flag this bug as a **Blocker**
+                  <AlertTriangle size={14} color="var(--accent-rust)" style={{ marginRight: '4px' }} />
+                  Flag this bug as a <strong>Blocker</strong>
                 </label>
               </div>
 
@@ -566,10 +570,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 {/* Status Dropdown */}
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Status</label>
-                  <select 
-                    value={activeBug.status} 
+                  <select
+                    value={activeBug.status}
+                    disabled={!canEdit}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { status: e.target.value })}
-                    style={styles.modalSelect}
+                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
                   >
                     {BUG_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
@@ -577,10 +582,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 {/* Severity Dropdown */}
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Severity</label>
-                  <select 
-                    value={activeBug.severity} 
+                  <select
+                    value={activeBug.severity}
+                    disabled={!canEdit}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { severity: e.target.value })}
-                    style={styles.modalSelect}
+                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
                   >
                     {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
                   </select>
@@ -591,10 +597,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 {/* Owner Dropdown */}
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Owner</label>
-                  <select 
-                    value={activeBug.owner_id || ''} 
+                  <select
+                    value={activeBug.owner_id || ''}
+                    disabled={!canEdit}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { owner_id: e.target.value ? parseInt(e.target.value) : -1 })}
-                    style={styles.modalSelect}
+                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
                   >
                     <option value="">Unassigned</option>
                     {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
@@ -603,10 +610,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 {/* Blocker Flag */}
                 <div style={{ ...styles.inputGroup, flex: 1, justifyContent: 'center' }}>
                   <div style={styles.checkboxGroup}>
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       id="detail-is-blocker"
                       checked={activeBug.is_blocker}
+                      disabled={!canEdit}
                       onChange={(e) => handleBugFieldUpdate(activeBug.id, { is_blocker: e.target.checked })}
                       style={styles.checkbox}
                     />
@@ -709,8 +717,9 @@ const styles = {
   },
   title: {
     fontSize: '24px',
-    fontWeight: '600',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-strong)',
   },
   filtersRow: {
     display: 'flex',
@@ -726,15 +735,15 @@ const styles = {
   },
   filterLabel: {
     fontSize: '12px',
-    fontWeight: '600',
-    color: '#9ca3af',
+    fontWeight: '700',
+    color: 'var(--text-muted)',
   },
   filterSelect: {
     padding: '8px 12px',
-    background: 'rgba(30, 41, 59, 0.4)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
   },
@@ -761,22 +770,23 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: '16px',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '10px',
   },
   columnTitle: {
     fontSize: '14px',
-    fontWeight: '600',
-    color: '#cbd5e1',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   columnCount: {
     fontSize: '12px',
-    background: 'rgba(255, 255, 255, 0.06)',
-    padding: '2px 8px',
-    borderRadius: '9999px',
-    color: '#94a3b8',
-    fontWeight: '500',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    padding: '1px 8px',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-muted)',
+    fontWeight: '700',
   },
   columnContent: {
     display: 'flex',
@@ -787,26 +797,22 @@ const styles = {
   },
   emptyColumnText: {
     textAlign: 'center',
-    color: '#475569',
+    color: 'var(--text-subtle)',
     fontSize: '12px',
     padding: '20px 0',
-    border: '1px dashed rgba(255, 255, 255, 0.03)',
-    borderRadius: '6px',
+    border: '2px dashed var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
   },
   card: {
-    background: 'rgba(30, 41, 59, 0.25)',
-    border: '1px solid rgba(255, 255, 255, 0.04)',
-    borderRadius: '8px',
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
     padding: '14px',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
-    '&:hover': {
-      borderColor: 'rgba(99, 102, 241, 0.4)',
-      transform: 'translateY(-2px)',
-    }
   },
   cardHeader: {
     display: 'flex',
@@ -816,38 +822,38 @@ const styles = {
   cardKey: {
     fontSize: '10px',
     fontWeight: '700',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
   },
   sevBadge: {
     fontSize: '9px',
     padding: '2px 6px',
-    borderRadius: '4px',
+    borderRadius: 'var(--border-radius-sm)',
     fontWeight: '700',
     textTransform: 'uppercase',
   },
   cardTitle: {
     fontSize: '14px',
-    fontWeight: '500',
-    color: '#f3f4f6',
+    fontWeight: '600',
+    color: 'var(--text-strong)',
     lineHeight: '1.4',
   },
   cardFooter: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderTop: '1px solid rgba(255, 255, 255, 0.03)',
+    borderTop: '2px solid var(--glass-border)',
     paddingTop: '8px',
   },
   ownerText: {
     fontSize: '11px',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
   blockerTag: {
-    background: 'rgba(239, 68, 68, 0.15)',
-    color: '#fca5a5',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
+    background: 'var(--danger-bg)',
+    color: 'var(--danger-text)',
+    border: '2px solid var(--danger-border)',
     padding: '1px 4px',
-    borderRadius: '3px',
+    borderRadius: 'var(--border-radius-sm)',
     fontSize: '9px',
     fontWeight: '700',
     display: 'inline-flex',
@@ -856,33 +862,34 @@ const styles = {
   loading: {
     textAlign: 'center',
     padding: '100px 0',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
   },
-  
+
   // Modals
   modalHeader: {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '16px',
     marginBottom: '20px',
   },
   modalTitle: {
     fontSize: '20px',
-    fontWeight: '600',
-    color: '#f3f4f6',
-    fontFamily: "'Outfit', sans-serif",
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
   },
   modalSubheading: {
     fontSize: '12px',
-    color: '#818cf8',
-    fontWeight: '600',
+    color: 'var(--primary-neon)',
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
   closeBtn: {
     background: 'none',
     border: 'none',
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     cursor: 'pointer',
   },
   modalForm: {
@@ -890,36 +897,40 @@ const styles = {
     flexDirection: 'column',
     gap: '16px',
   },
+  inputGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
   modalLabel: {
     fontSize: '13px',
-    fontWeight: '500',
-    color: '#9ca3af',
-    marginBottom: '6px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
   },
   modalInput: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
   },
   modalSelect: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
   },
   modalTextarea: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     resize: 'vertical',
     fontSize: '14px',
@@ -929,28 +940,28 @@ const styles = {
     flexDirection: 'column',
     gap: '10px',
     padding: '12px',
-    background: 'rgba(30, 41, 59, 0.22)',
-    border: '1px dashed rgba(129, 140, 248, 0.35)',
-    borderRadius: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px dashed var(--primary-border)',
+    borderRadius: 'var(--border-radius-sm)',
     outline: 'none',
   },
   screenshotDropHeader: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    color: '#cbd5e1',
+    color: 'var(--text-muted)',
     fontSize: '13px',
-    fontWeight: '500',
+    fontWeight: '600',
   },
   fileInput: {
-    color: '#9ca3af',
+    color: 'var(--text-muted)',
     fontSize: '13px',
   },
   pasteHint: {
     display: 'flex',
     alignItems: 'center',
     gap: '6px',
-    color: '#64748b',
+    color: 'var(--text-subtle)',
     fontSize: '12px',
   },
   screenshotPreviewWrap: {
@@ -958,16 +969,16 @@ const styles = {
     gap: '12px',
     alignItems: 'center',
     padding: '10px',
-    background: 'rgba(255, 255, 255, 0.02)',
-    border: '1px solid rgba(255, 255, 255, 0.05)',
-    borderRadius: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
   },
   screenshotPreview: {
     width: '92px',
     height: '60px',
     objectFit: 'cover',
-    borderRadius: '4px',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
+    borderRadius: 'var(--border-radius-sm)',
+    border: '2px solid var(--glass-border)',
   },
   screenshotPreviewMeta: {
     flex: 1,
@@ -976,7 +987,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '10px',
-    color: '#cbd5e1',
+    color: 'var(--text-muted)',
     fontSize: '12px',
   },
   clearScreenshotBtn: {
@@ -995,12 +1006,12 @@ const styles = {
   checkbox: {
     width: '16px',
     height: '16px',
-    accentColor: '#6366f1',
+    accentColor: 'var(--primary-neon)',
     cursor: 'pointer',
   },
   checkboxLabel: {
     fontSize: '14px',
-    color: '#cbd5e1',
+    color: 'var(--text-main)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
@@ -1011,7 +1022,7 @@ const styles = {
     gap: '10px',
     marginTop: '10px',
   },
-  
+
   // Bug details modal styles
   modalBody: {
     display: 'flex',
@@ -1024,21 +1035,21 @@ const styles = {
   },
   detailTitle: {
     fontSize: '14px',
-    fontWeight: '600',
-    color: '#e2e8f0',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
     marginBottom: '10px',
     display: 'flex',
     alignItems: 'center',
-    fontFamily: "'Outfit', sans-serif",
+    fontFamily: 'var(--font-display)',
   },
   detailDescText: {
     fontSize: '14px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
     lineHeight: '1.6',
-    background: 'rgba(255, 255, 255, 0.02)',
+    background: 'var(--bg-tertiary)',
     padding: '12px',
-    borderRadius: '6px',
-    border: '1px solid rgba(255, 255, 255, 0.04)',
+    borderRadius: 'var(--border-radius-sm)',
+    border: '2px solid var(--glass-border)',
     whiteSpace: 'pre-wrap',
   },
   screenshotLink: {
@@ -1048,16 +1059,16 @@ const styles = {
     width: '100%',
     maxHeight: '320px',
     objectFit: 'contain',
-    background: 'rgba(255, 255, 255, 0.02)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
-    borderRadius: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
   },
   metaRow: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '12px',
-    color: '#6b7280',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+    color: 'var(--text-subtle)',
+    borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '12px',
   },
   commentForm: {
@@ -1068,10 +1079,10 @@ const styles = {
   },
   commentInput: {
     padding: '10px',
-    background: 'rgba(30, 41, 59, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '6px',
-    color: '#f3f4f6',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
     resize: 'none',
@@ -1087,34 +1098,34 @@ const styles = {
     gap: '10px',
     maxHeight: '200px',
     overflowY: 'auto',
-    borderTop: '1px solid rgba(255, 255, 255, 0.04)',
+    borderTop: '2px solid var(--glass-border)',
     paddingTop: '16px',
   },
   noComments: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
     fontSize: '13px',
     textAlign: 'center',
     padding: '10px 0',
   },
   commentRow: {
-    background: 'rgba(255, 255, 255, 0.02)',
+    background: 'var(--bg-tertiary)',
     padding: '10px 12px',
-    borderRadius: '6px',
-    border: '1px solid rgba(255, 255, 255, 0.02)',
+    borderRadius: 'var(--border-radius-sm)',
+    border: '2px solid var(--glass-border)',
   },
   commentMeta: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '12px',
-    color: '#94a3b8',
+    color: 'var(--text-muted)',
     marginBottom: '4px',
   },
   commentTime: {
-    color: '#475569',
+    color: 'var(--text-subtle)',
   },
   commentText: {
     fontSize: '13px',
-    color: '#cbd5e1',
+    color: 'var(--text-muted)',
     lineHeight: '1.4',
   }
 };
