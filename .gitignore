@@ -6,5 +6,8 @@
 frontend/node_modules/
 backend/uploads/
 database.db
+database.db.bak*
 __pycache__/
 *.pyc
+.env
+.env.local
