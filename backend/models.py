@@ -63,12 +63,16 @@ class Bug(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    project_sequence = Column(Integer, nullable=True)
     version_id = Column(Integer, ForeignKey("versions.id"), nullable=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
+    expected_behavior = Column(Text, nullable=True)
     screenshot_url = Column(String, nullable=True)
     status = Column(String, default="Open")  # Open, In Progress, In QA, Resolved, Closed
     severity = Column(String, default="Medium")  # Low, Medium, High, Critical
+    priority = Column(String, default="Medium")  # Low, Medium, High, Urgent
+    bug_type = Column(String, default="Functional")  # Functional, Security, Usability, Regression, Performance, Other
     is_blocker = Column(Boolean, default=False)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)

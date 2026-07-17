@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
@@ -78,6 +78,26 @@ def ensure_sqlite_schema():
         }
         if "screenshot_url" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN screenshot_url VARCHAR"))
+        if "priority" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN priority VARCHAR DEFAULT 'Medium'"))
+        if "bug_type" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN bug_type VARCHAR DEFAULT 'Functional'"))
+        if "expected_behavior" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN expected_behavior TEXT"))
+        if "project_sequence" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN project_sequence INTEGER"))
+
+        # Backfill per-project sequence numbers for any bugs that don't have one yet
+        connection.execute(text("""
+            UPDATE bugs
+            SET project_sequence = (
+                SELECT COUNT(*)
+                FROM bugs AS earlier
+                WHERE earlier.project_id = bugs.project_id
+                AND earlier.id <= bugs.id
+            )
+            WHERE project_sequence IS NULL
+        """))
 
         user_columns = {
             row[1]
@@ -535,12 +555,26 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(requi
 
     return new_project
 
+def _visible_project_ids(db: Session, user: User) -> Optional[List[int]]:
+    """Returns None for unrestricted visibility, or the list of project IDs
+    a scoped role (currently just Dev) is a member of."""
+    if user.role != "Dev":
+        return None
+    return [m.project_id for m in db.query(ProjectMember).filter(ProjectMember.user_id == user.id).all()]
+
 @app.get("/api/projects", response_model=List[ProjectOut])
 def list_projects(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(Project).all()
+    visible_ids = _visible_project_ids(db, current_user)
+    query = db.query(Project)
+    if visible_ids is not None:
+        query = query.filter(Project.id.in_(visible_ids))
+    return query.all()
 
 @app.get("/api/projects/{project_id}", response_model=ProjectOut)
 def get_project(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    visible_ids = _visible_project_ids(db, current_user)
+    if visible_ids is not None and project_id not in visible_ids:
+        raise HTTPException(status_code=404, detail="Project not found")
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -746,6 +780,28 @@ def delete_project_document(
 
 # ==================== BUGS ENDPOINTS ====================
 
+DEV_ALLOWED_BUG_STATUSES = ["Open", "In Progress", "Resolved"]
+
+def _check_dev_status_allowed(current_user: User, status: Optional[str]):
+    if status is not None and current_user.role == "Dev" and status not in DEV_ALLOWED_BUG_STATUSES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Devs can only set bug status to one of {DEV_ALLOWED_BUG_STATUSES}"
+        )
+
+DEV_EDITABLE_BUG_UPDATE_FIELDS = {"screenshot_data"}
+
+def _check_dev_can_edit_bug(current_user: User, bug_in: BugUpdate):
+    if current_user.role != "Dev":
+        return
+    provided_fields = set(bug_in.dict(exclude_unset=True).keys())
+    disallowed = provided_fields - DEV_EDITABLE_BUG_UPDATE_FIELDS
+    if disallowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Devs have read-only access to bugs; only screenshots can be added."
+        )
+
 @app.post("/api/bugs", response_model=BugOut)
 def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
     # Verify project exists
@@ -754,17 +810,28 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
         require_version_for_project(db, bug_in.version_id, bug_in.project_id)
     if bug_in.owner_id is not None:
         require_active_user(db, bug_in.owner_id, detail="Bug owner not found")
+    _check_dev_status_allowed(current_user, bug_in.status)
+
+    # Reporter becomes the owner by default unless someone else is picked
+    owner_id = bug_in.owner_id if bug_in.owner_id is not None else current_user.id
+
+    max_sequence = db.query(func.max(Bug.project_sequence)).filter(Bug.project_id == bug_in.project_id).scalar()
+    next_sequence = (max_sequence or 0) + 1
 
     new_bug = Bug(
         project_id=bug_in.project_id,
+        project_sequence=next_sequence,
         version_id=bug_in.version_id,
         title=bug_in.title,
         description=bug_in.description,
+        expected_behavior=bug_in.expected_behavior,
         screenshot_url=save_screenshot_data(bug_in.screenshot_data),
         status=bug_in.status,
         severity=bug_in.severity,
+        priority=bug_in.priority,
+        bug_type=bug_in.bug_type,
         is_blocker=bug_in.is_blocker,
-        owner_id=bug_in.owner_id,
+        owner_id=owner_id,
         reporter_id=current_user.id
     )
     db.add(new_bug)
@@ -816,6 +883,9 @@ def list_bugs(project_id: Optional[int] = None, current_user: User = Depends(get
     query = db.query(Bug)
     if project_id is not None:
         query = query.filter(Bug.project_id == project_id)
+    visible_ids = _visible_project_ids(db, current_user)
+    if visible_ids is not None:
+        query = query.filter(Bug.project_id.in_(visible_ids))
     return query.all()
 
 @app.put("/api/bugs/{bug_id}", response_model=BugOut)
@@ -828,11 +898,15 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
     old_owner_id = bug.owner_id
     old_is_blocker = bug.is_blocker
 
+    _check_dev_can_edit_bug(current_user, bug_in)
+
     # Apply updates
     if bug_in.title is not None:
         bug.title = bug_in.title
     if bug_in.description is not None:
         bug.description = bug_in.description
+    if bug_in.expected_behavior is not None:
+        bug.expected_behavior = bug_in.expected_behavior
     if bug_in.screenshot_data is not None:
         bug.screenshot_url = save_screenshot_data(bug_in.screenshot_data)
     if bug_in.status is not None:
@@ -842,9 +916,13 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
             bug.resolved_at = datetime.datetime.utcnow()
         elif bug_in.status not in ["Resolved", "Closed"] and old_status in ["Resolved", "Closed"]:
             bug.resolved_at = None
-            
+
     if bug_in.severity is not None:
         bug.severity = bug_in.severity
+    if bug_in.priority is not None:
+        bug.priority = bug_in.priority
+    if bug_in.bug_type is not None:
+        bug.bug_type = bug_in.bug_type
     if bug_in.is_blocker is not None:
         bug.is_blocker = bug_in.is_blocker
     if bug_in.version_id is not None:
@@ -1012,7 +1090,7 @@ def get_report(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     start, end = parse_report_range(start_date, end_date)
@@ -1027,7 +1105,7 @@ def export_bugs(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     start, end = parse_report_range(start_date, end_date)
@@ -1045,7 +1123,7 @@ def export_projects(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     start, end = parse_report_range(start_date, end_date)
@@ -1061,7 +1139,7 @@ def export_projects(
 @app.get("/api/reports/export/versions")
 def export_versions(
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     if project_id is not None:
@@ -1078,7 +1156,7 @@ def export_workload(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     start, end = parse_report_range(start_date, end_date)
@@ -1096,7 +1174,7 @@ def export_activity(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
     project_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "Guest")),
     db: Session = Depends(get_db)
 ):
     start, end = parse_report_range(start_date, end_date)

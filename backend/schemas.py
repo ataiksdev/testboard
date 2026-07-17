@@ -186,8 +186,11 @@ class CommentOut(CommentBase):
 class BugBase(BaseModel):
     title: str
     description: Optional[str] = None
+    expected_behavior: Optional[str] = None
     status: str = "Open"
     severity: str = "Medium"
+    priority: str = "Medium"
+    bug_type: str = "Functional"
     is_blocker: bool = False
     project_id: int
     version_id: Optional[int] = None
@@ -199,15 +202,20 @@ class BugCreate(BugBase):
 class BugUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    expected_behavior: Optional[str] = None
     screenshot_data: Optional[str] = None
     status: Optional[str] = None
     severity: Optional[str] = None
+    priority: Optional[str] = None
+    bug_type: Optional[str] = None
     is_blocker: Optional[bool] = None
     version_id: Optional[int] = None
     owner_id: Optional[int] = None
 
 class BugOut(BugBase):
     id: int
+    project_sequence: Optional[int] = None
+    project: Optional[ProjectOut] = None
     screenshot_url: Optional[str] = None
     reporter_id: int
     reporter: UserOut

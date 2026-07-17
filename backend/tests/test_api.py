@@ -607,3 +607,204 @@ def test_notification_mark_read_and_read_all():
 
     resp = client.get("/api/notifications/unread-count", headers=admin_headers)
     assert resp.json()["count"] == 0
+
+
+def test_bug_owner_auto_assign_and_priority_type_defaults():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "AutoAssign Proj", "key": "AAP"}, headers=admin_headers).json()
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+
+    # No owner_id given -> reporter becomes owner, priority/bug_type default
+    resp = client.post("/api/bugs", json={
+        "title": "Unassigned bug",
+        "project_id": project["id"]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    bug = resp.json()
+    assert bug["owner_id"] == me["id"]
+    assert bug["priority"] == "Medium"
+    assert bug["bug_type"] == "Functional"
+
+    # Explicit owner_id is still honored
+    other_headers, other_id = _make_user_with_role(admin_headers, "owner-explicit@test.com", "Explicit Owner", "QA")
+    resp = client.post("/api/bugs", json={
+        "title": "Explicitly assigned bug",
+        "project_id": project["id"],
+        "owner_id": other_id
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["owner_id"] == other_id
+
+
+def test_bug_priority_and_type_round_trip():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "PT Proj", "key": "PTP"}, headers=admin_headers).json()
+
+    resp = client.post("/api/bugs", json={
+        "title": "Security hole",
+        "project_id": project["id"],
+        "priority": "Urgent",
+        "bug_type": "Security"
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    bug = resp.json()
+    assert bug["priority"] == "Urgent"
+    assert bug["bug_type"] == "Security"
+
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"priority": "Low", "bug_type": "Regression"}, headers=admin_headers)
+    assert resp.status_code == 200
+    updated = resp.json()
+    assert updated["priority"] == "Low"
+    assert updated["bug_type"] == "Regression"
+
+
+def test_dev_bug_create_status_restriction():
+    admin_headers = _make_admin()
+    dev_headers, _ = _make_user_with_role(admin_headers, "devstatus@test.com", "Dev Status", "Dev")
+    project = client.post("/api/projects", json={"name": "DevStatus Proj", "key": "DSP"}, headers=admin_headers).json()
+
+    # Dev is a member so they can see/act on the project's bugs
+    dev_me = client.get("/api/auth/me", headers=dev_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": dev_me["id"]}, headers=admin_headers)
+
+    # Dev creating a bug pre-set to a disallowed status is rejected
+    resp = client.post("/api/bugs", json={
+        "title": "Bad status bug",
+        "project_id": project["id"],
+        "status": "Closed"
+    }, headers=dev_headers)
+    assert resp.status_code == 403
+
+    # Dev can create with an allowed status
+    resp = client.post("/api/bugs", json={
+        "title": "Dev bug",
+        "project_id": project["id"],
+        "status": "Open"
+    }, headers=dev_headers)
+    assert resp.status_code == 200
+
+
+def test_dev_bug_read_only_access():
+    admin_headers = _make_admin()
+    dev_headers, _ = _make_user_with_role(admin_headers, "devreadonly@test.com", "Dev ReadOnly", "Dev")
+    project = client.post("/api/projects", json={"name": "ReadOnly Proj", "key": "ROP"}, headers=admin_headers).json()
+
+    dev_me = client.get("/api/auth/me", headers=dev_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": dev_me["id"]}, headers=admin_headers)
+
+    bug = client.post("/api/bugs", json={
+        "title": "Read only bug",
+        "project_id": project["id"]
+    }, headers=dev_headers).json()
+
+    # Dev cannot change status, severity, priority, type, owner, or blocker flag
+    for field, value in [
+        ("status", "In Progress"),
+        ("severity", "Critical"),
+        ("priority", "Urgent"),
+        ("bug_type", "Security"),
+        ("owner_id", dev_me["id"]),
+        ("is_blocker", True),
+        ("title", "Renamed"),
+    ]:
+        resp = client.put(f"/api/bugs/{bug['id']}", json={field: value}, headers=dev_headers)
+        assert resp.status_code == 403, f"Dev should not be able to edit {field}"
+
+    # Dev CAN add/replace a screenshot
+    tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"screenshot_data": tiny_png}, headers=dev_headers)
+    assert resp.status_code == 200
+    assert resp.json()["screenshot_url"] is not None
+
+    # Admin/QA remain fully able to edit
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "Closed"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "Closed"
+
+
+def test_reports_hidden_from_dev():
+    admin_headers = _make_admin()
+    dev_headers, _ = _make_user_with_role(admin_headers, "devreports@test.com", "Dev Reports", "Dev")
+
+    today_str = datetime.date.today().isoformat()
+    resp = client.get(f"/api/reports?start_date={today_str}&end_date={today_str}", headers=dev_headers)
+    assert resp.status_code == 403
+
+    resp = client.get(f"/api/reports/export/bugs?start_date={today_str}&end_date={today_str}", headers=dev_headers)
+    assert resp.status_code == 403
+
+    # Admin retains access
+    resp = client.get(f"/api/reports?start_date={today_str}&end_date={today_str}", headers=admin_headers)
+    assert resp.status_code == 200
+
+
+def test_bug_project_sequence_numbering():
+    admin_headers = _make_admin()
+    project_a = client.post("/api/projects", json={"name": "Seq Proj A", "key": "SQA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Seq Proj B", "key": "SQB"}, headers=admin_headers).json()
+
+    a1 = client.post("/api/bugs", json={"title": "A bug 1", "project_id": project_a["id"]}, headers=admin_headers).json()
+    b1 = client.post("/api/bugs", json={"title": "B bug 1", "project_id": project_b["id"]}, headers=admin_headers).json()
+    a2 = client.post("/api/bugs", json={"title": "A bug 2", "project_id": project_a["id"]}, headers=admin_headers).json()
+
+    # Each project has its own independent sequence starting at 1
+    assert a1["project_sequence"] == 1
+    assert b1["project_sequence"] == 1
+    assert a2["project_sequence"] == 2
+
+    # The nested project object is present so the frontend never has to fall back to "Unknown Project"
+    assert a1["project"]["key"] == "SQA"
+    assert a1["project"]["name"] == "Seq Proj A"
+
+
+def test_dev_visibility_scoping():
+    admin_headers = _make_admin()
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "devscope@test.com", "Dev Scope", "Dev")
+    qa_headers, _ = _make_user_with_role(admin_headers, "qascope@test.com", "QA Scope", "QA")
+
+    project_a = client.post("/api/projects", json={"name": "Scope Proj A", "key": "SPA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Scope Proj B", "key": "SPB"}, headers=admin_headers).json()
+
+    # Dev is only a member of Project A
+    client.post(f"/api/projects/{project_a['id']}/members", json={"user_id": dev_id}, headers=admin_headers)
+
+    # Bugs in both projects, created by admin (not the Dev)
+    bug_a = client.post("/api/bugs", json={"title": "Bug in A", "project_id": project_a["id"]}, headers=admin_headers).json()
+    bug_b = client.post("/api/bugs", json={"title": "Bug in B", "project_id": project_b["id"]}, headers=admin_headers).json()
+
+    # Dev: projects list only shows A
+    resp = client.get("/api/projects", headers=dev_headers)
+    assert resp.status_code == 200
+    project_ids = [p["id"] for p in resp.json()]
+    assert project_a["id"] in project_ids
+    assert project_b["id"] not in project_ids
+
+    # Dev: fetching Project B directly 404s
+    resp = client.get(f"/api/projects/{project_b['id']}", headers=dev_headers)
+    assert resp.status_code == 404
+
+    # Dev: fetching Project A directly succeeds
+    resp = client.get(f"/api/projects/{project_a['id']}", headers=dev_headers)
+    assert resp.status_code == 200
+
+    # Dev: bug list only shows bugs from A (including ones not owned/reported by them)
+    resp = client.get("/api/bugs", headers=dev_headers)
+    assert resp.status_code == 200
+    bug_ids = [b["id"] for b in resp.json()]
+    assert bug_a["id"] in bug_ids
+    assert bug_b["id"] not in bug_ids
+
+    # Admin and QA continue to see everything
+    for headers in (admin_headers, qa_headers):
+        resp = client.get("/api/projects", headers=headers)
+        seen_ids = [p["id"] for p in resp.json()]
+        assert project_a["id"] in seen_ids
+        assert project_b["id"] in seen_ids
+
+        resp = client.get(f"/api/projects/{project_b['id']}", headers=headers)
+        assert resp.status_code == 200
+
+        resp = client.get("/api/bugs", headers=headers)
+        seen_bug_ids = [b["id"] for b in resp.json()]
+        assert bug_a["id"] in seen_bug_ids
+        assert bug_b["id"] in seen_bug_ids
