@@ -5,6 +5,7 @@ import { ProjectTracker } from './components/ProjectTracker';
 import { BugTracker } from './components/BugTracker';
 import { ReportsDashboard } from './components/ReportsDashboard';
 import { AdminPanel } from './components/AdminPanel';
+import { NotificationBell } from './components/NotificationBell';
 import {
   FolderKanban, Bug as BugIcon, FileText, Shield,
   LogOut, Terminal, Menu, X, Moon, Sun, ChevronLeft, ChevronRight
@@ -124,6 +125,7 @@ const AppContent = () => {
 
         {/* User profile section at the bottom of the sidebar */}
         <div style={styles.sidebarFooter}>
+          <NotificationBell collapsed={collapsed} />
           <button style={styles.themeBtn} onClick={toggleTheme} title={collapsed ? (theme === 'dark' ? 'Light mode' : 'Dark mode') : undefined}>
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {!collapsed && (theme === 'dark' ? 'Light mode' : 'Dark mode')}
@@ -156,9 +158,12 @@ const AppContent = () => {
             </div>
             <h1 style={{ ...styles.logoText, fontSize: '18px' }}>TestBoard</h1>
           </div>
-          <button style={styles.iconBtn} onClick={toggleTheme}>
-            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+          <div style={styles.mobileHeaderActions}>
+            <NotificationBell variant="compact" />
+            <button style={styles.iconBtn} onClick={toggleTheme}>
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          </div>
         </header>
 
         {/* Main Section */}
@@ -399,6 +404,11 @@ const styles = {
     cursor: 'pointer',
   },
   mobileLogo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  mobileHeaderActions: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',

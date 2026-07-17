@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { canManageBugs } from '../utils/roles';
 
-const BUG_STATUSES = ["Open", "In Progress", "In QA", "Resolved", "Closed"];
+const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
 
 export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
@@ -15,7 +15,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [versions, setVersions] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Filter States
   const [filterProjectId, setFilterProjectId] = useState(selectedProject ? selectedProject.id : '');
   const [filterVersionId, setFilterVersionId] = useState('');
@@ -96,10 +96,10 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const fetchBugs = async () => {
     try {
       setLoading(true);
-      const url = filterProjectId 
+      const url = filterProjectId
         ? `${API_URL}/api/bugs?project_id=${filterProjectId}`
         : `${API_URL}/api/bugs`;
-        
+
       const response = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -200,7 +200,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         setBugOwnerId('');
         setBugIsBlocker(false);
         clearScreenshot();
-        
+
         fetchBugs();
       } else {
         const data = await response.json();
@@ -223,9 +223,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       });
 
       if (!response.ok) throw new Error("Failed to update bug");
-      
+
       const updatedBug = await response.json();
-      
+
       // Update local state lists
       setBugs(bugs.map(b => b.id === bugId ? updatedBug : b));
       if (activeBug && activeBug.id === bugId) {
@@ -285,7 +285,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   };
 
   // Filter bugs by version if selected
-  const filteredBugs = filterVersionId 
+  const filteredBugs = filterVersionId
     ? bugs.filter(b => b.version_id === parseInt(filterVersionId))
     : bugs;
 
@@ -361,9 +361,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
                 <div style={styles.columnContent}>
                   {statusBugs.map(bug => (
-                    <div 
-                      key={bug.id} 
-                      style={styles.card} 
+                    <div
+                      key={bug.id}
+                      style={styles.card}
                       onClick={() => handleOpenDetail(bug)}
                       className="animate-slide-up"
                     >
@@ -421,8 +421,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             <form onSubmit={handleCreateBug} style={styles.modalForm}>
               <div style={styles.inputGroup}>
                 <label style={styles.modalLabel}>Select Project</label>
-                <select 
-                  value={bugProjId} 
+                <select
+                  value={bugProjId}
                   onChange={(e) => setBugProjId(e.target.value)}
                   required
                   style={styles.modalSelect}
@@ -434,8 +434,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               <div style={styles.row}>
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Target Version</label>
-                  <select 
-                    value={bugVerId} 
+                  <select
+                    value={bugVerId}
                     onChange={(e) => setBugVerId(e.target.value)}
                     style={styles.modalSelect}
                   >
@@ -445,8 +445,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 </div>
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Severity</label>
-                  <select 
-                    value={bugSeverity} 
+                  <select
+                    value={bugSeverity}
                     onChange={(e) => setBugSeverity(e.target.value)}
                     style={styles.modalSelect}
                   >
@@ -457,8 +457,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
               <div style={styles.inputGroup}>
                 <label style={styles.modalLabel}>Assign Owner</label>
-                <select 
-                  value={bugOwnerId} 
+                <select
+                  value={bugOwnerId}
                   onChange={(e) => setBugOwnerId(e.target.value)}
                   style={styles.modalSelect}
                 >
@@ -469,9 +469,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
               <div style={styles.inputGroup}>
                 <label style={styles.modalLabel}>Bug Title</label>
-                <input 
-                  type="text" 
-                  value={bugTitle} 
+                <input
+                  type="text"
+                  value={bugTitle}
                   onChange={(e) => setBugTitle(e.target.value)}
                   placeholder="e.g. CORS error on /api/reports endpoint"
                   required
@@ -481,8 +481,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
               <div style={styles.inputGroup}>
                 <label style={styles.modalLabel}>Steps to Reproduce & Description</label>
-                <textarea 
-                  value={bugDesc} 
+                <textarea
+                  value={bugDesc}
                   onChange={(e) => setBugDesc(e.target.value)}
                   placeholder="1. Go to Reports tab.&#10;2. Select Date range.&#10;3. Observe console error..."
                   rows={4}
@@ -535,8 +535,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               </div>
 
               <div style={styles.checkboxGroup}>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   id="create-is-blocker"
                   checked={bugIsBlocker}
                   onChange={(e) => setBugIsBlocker(e.target.checked)}
@@ -669,7 +669,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 </h4>
 
                 <form onSubmit={handlePostComment} style={styles.commentForm}>
-                  <textarea 
+                  <textarea
                     value={newCommentText}
                     onChange={(e) => setNewCommentText(e.target.value)}
                     placeholder="Log status update or diagnostic details for this bug..."
