@@ -2,12 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   Bug as BugIcon, MessageSquare, User as UserIcon,
-  AlertTriangle, CheckCircle, Clock, X, Eye, FileText, ImagePlus, Clipboard
+  AlertTriangle, CheckCircle, Clock, X, Eye, FileText, ImagePlus, Clipboard, Search
 } from 'lucide-react';
-import { canManageBugs } from '../utils/roles';
+import { canManageBugs, canEditBugFields } from '../utils/roles';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
+const DEV_ALLOWED_BUG_STATUSES = ["Open", "In Progress", "Resolved"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
+const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
+const BUG_TYPES = ["Functional", "Security", "Usability", "Regression", "Performance", "Other"];
+const PRIORITY_COLOR_VAR = { Low: '--text-subtle', Medium: '--primary-neon', High: '--accent-mustard', Urgent: '--accent-rust' };
 
 export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [bugs, setBugs] = useState([]);
@@ -19,6 +23,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   // Filter States
   const [filterProjectId, setFilterProjectId] = useState(selectedProject ? selectedProject.id : '');
   const [filterVersionId, setFilterVersionId] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterSeverity, setFilterSeverity] = useState('');
+  const [filterPriority, setFilterPriority] = useState('');
+  const [filterType, setFilterType] = useState('');
+  const [filterOwnerId, setFilterOwnerId] = useState('');
 
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -30,10 +39,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   // Bug Create Form States
   const [bugTitle, setBugTitle] = useState('');
   const [bugDesc, setBugDesc] = useState('');
+  const [bugExpectedBehavior, setBugExpectedBehavior] = useState('');
   const [bugProjId, setBugProjId] = useState(selectedProject ? selectedProject.id : '');
   const [bugVerId, setBugVerId] = useState('');
   const [bugStatus, setBugStatus] = useState('Open');
   const [bugSeverity, setBugSeverity] = useState('Medium');
+  const [bugPriority, setBugPriority] = useState('Medium');
+  const [bugType, setBugType] = useState('Functional');
   const [bugOwnerId, setBugOwnerId] = useState('');
   const [bugIsBlocker, setBugIsBlocker] = useState(false);
   const [bugScreenshotData, setBugScreenshotData] = useState('');
@@ -41,6 +53,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
   const { token, API_URL, user } = useAuth();
   const canEdit = canManageBugs(user.role);
+  const isDev = user.role === 'Dev';
+  const bugStatusOptions = isDev ? DEV_ALLOWED_BUG_STATUSES : BUG_STATUSES;
+  const canEditFields = canEditBugFields(user.role);
 
   useEffect(() => {
     if (selectedProject) {
@@ -133,7 +148,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     return screenshotUrl.startsWith('http') ? screenshotUrl : `${API_URL}${screenshotUrl}`;
   };
 
-  const setScreenshotFile = (file) => {
+  const formatBugKey = (bug) => {
+    if (!bug.project) return `BUG-${bug.id}`;
+    const seq = bug.project_sequence != null ? bug.project_sequence : bug.id;
+    return `${bug.project.key}-${String(seq).padStart(3, '0')}`;
+  };
+
+  const readScreenshotFile = (file, onLoaded) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       alert("Screenshot must be an image file");
@@ -145,11 +166,15 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
-      setBugScreenshotData(reader.result);
-      setBugScreenshotName(file.name || 'Pasted screenshot');
-    };
+    reader.onload = () => onLoaded(reader.result, file.name || 'Pasted screenshot');
     reader.readAsDataURL(file);
+  };
+
+  const setScreenshotFile = (file) => {
+    readScreenshotFile(file, (dataUrl, name) => {
+      setBugScreenshotData(dataUrl);
+      setBugScreenshotName(name);
+    });
   };
 
   const handleScreenshotPaste = (e) => {
@@ -167,6 +192,22 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     setBugScreenshotName('');
   };
 
+  const uploadDetailScreenshot = (file) => {
+    if (!activeBug) return;
+    readScreenshotFile(file, (dataUrl) => {
+      handleBugFieldUpdate(activeBug.id, { screenshot_data: dataUrl });
+    });
+  };
+
+  const handleDetailScreenshotPaste = (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find(item => item.type.startsWith('image/'));
+    if (!imageItem) return;
+
+    e.preventDefault();
+    uploadDetailScreenshot(imageItem.getAsFile());
+  };
+
   const handleCreateBug = async (e) => {
     e.preventDefault();
     try {
@@ -179,10 +220,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         body: JSON.stringify({
           title: bugTitle,
           description: bugDesc,
+          expected_behavior: bugExpectedBehavior,
           project_id: parseInt(bugProjId),
           version_id: bugVerId ? parseInt(bugVerId) : null,
           status: bugStatus,
           severity: bugSeverity,
+          priority: bugPriority,
+          bug_type: bugType,
           is_blocker: bugIsBlocker,
           owner_id: bugOwnerId ? parseInt(bugOwnerId) : null,
           screenshot_data: bugScreenshotData || null
@@ -194,9 +238,12 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         // Clear
         setBugTitle('');
         setBugDesc('');
+        setBugExpectedBehavior('');
         setBugVerId('');
         setBugStatus('Open');
         setBugSeverity('Medium');
+        setBugPriority('Medium');
+        setBugType('Functional');
         setBugOwnerId('');
         setBugIsBlocker(false);
         clearScreenshot();
@@ -284,10 +331,16 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     }
   };
 
-  // Filter bugs by version if selected
-  const filteredBugs = filterVersionId
-    ? bugs.filter(b => b.version_id === parseInt(filterVersionId))
-    : bugs;
+  // Apply version, search, and metadata filters on top of the project-scoped fetch
+  const filteredBugs = bugs.filter(b => {
+    if (filterVersionId && b.version_id !== parseInt(filterVersionId)) return false;
+    if (searchQuery.trim() && !b.title.toLowerCase().includes(searchQuery.trim().toLowerCase())) return false;
+    if (filterSeverity && b.severity !== filterSeverity) return false;
+    if (filterPriority && b.priority !== filterPriority) return false;
+    if (filterType && b.bug_type !== filterType) return false;
+    if (filterOwnerId && String(b.owner_id || '') !== filterOwnerId) return false;
+    return true;
+  });
 
   if (loading && bugs.length === 0) return <div style={styles.loading}>Loading Kanban board...</div>;
 
@@ -311,6 +364,29 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               <BugIcon size={22} />
             </button>
           )}
+        </div>
+
+        <div style={styles.searchRow}>
+          <div style={styles.searchBox}>
+            <Search size={16} color="var(--text-subtle)" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search bugs by title..."
+              style={styles.searchInput}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                style={styles.searchClearBtn}
+                aria-label="Clear search"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
 
         <div style={styles.filtersRow}>
@@ -344,6 +420,72 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               </select>
             </div>
           )}
+
+          <div style={styles.filterGroup}>
+            <label style={styles.filterLabel}>Severity</label>
+            <select
+              value={filterSeverity}
+              onChange={(e) => setFilterSeverity(e.target.value)}
+              style={styles.filterSelect}
+            >
+              <option value="">All Severities</option>
+              {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
+            </select>
+          </div>
+
+          <div style={styles.filterGroup}>
+            <label style={styles.filterLabel}>Priority</label>
+            <select
+              value={filterPriority}
+              onChange={(e) => setFilterPriority(e.target.value)}
+              style={styles.filterSelect}
+            >
+              <option value="">All Priorities</option>
+              {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+
+          <div style={styles.filterGroup}>
+            <label style={styles.filterLabel}>Type</label>
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              style={styles.filterSelect}
+            >
+              <option value="">All Types</option>
+              {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+
+          <div style={styles.filterGroup}>
+            <label style={styles.filterLabel}>Owner</label>
+            <select
+              value={filterOwnerId}
+              onChange={(e) => setFilterOwnerId(e.target.value)}
+              style={styles.filterSelect}
+            >
+              <option value="">All Owners</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+            </select>
+          </div>
+
+          {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId) && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={styles.clearFiltersBtn}
+              onClick={() => {
+                setSearchQuery('');
+                setFilterSeverity('');
+                setFilterPriority('');
+                setFilterType('');
+                setFilterOwnerId('');
+                setFilterVersionId('');
+              }}
+            >
+              Clear Filters
+            </button>
+          )}
         </div>
       </div>
 
@@ -369,18 +511,32 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                     >
                       <div style={styles.cardHeader}>
                         <span style={styles.cardKey}>
-                          {bug.project ? bug.project.key : 'BUG'}-{bug.id}
+                          {formatBugKey(bug)}
                         </span>
-                        <span style={{
-                          ...styles.sevBadge,
-                          background: `var(--sev-${bug.severity.toLowerCase()})`,
-                          color: '#12100d'
-                        }}>
-                          {bug.severity}
-                        </span>
+                        <div style={styles.cardBadgeGroup}>
+                          <span style={{
+                            ...styles.sevBadge,
+                            background: `var(--sev-${bug.severity.toLowerCase()})`,
+                            color: '#12100d'
+                          }}>
+                            {bug.severity}
+                          </span>
+                          {bug.priority && (
+                            <span style={{
+                              ...styles.sevBadge,
+                              background: `var(${PRIORITY_COLOR_VAR[bug.priority] || '--text-subtle'})`,
+                              color: '#12100d'
+                            }}>
+                              {bug.priority}
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       <h4 style={styles.cardTitle}>{bug.title}</h4>
+                      {bug.bug_type && (
+                        <span style={styles.bugTypeTag}>{bug.bug_type}</span>
+                      )}
 
                       <div style={styles.cardFooter}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -411,7 +567,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       {/* CREATE BUG MODAL */}
       {showCreateModal && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '500px' }}>
+          <div className="modal-content glass-panel" style={{ maxWidth: '560px' }}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>Log a QA Bug Ticket</h3>
               <button style={styles.closeBtn} onClick={() => setShowCreateModal(false)}>
@@ -419,6 +575,40 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               </button>
             </div>
             <form onSubmit={handleCreateBug} style={styles.modalForm}>
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Bug Title</label>
+                <input
+                  type="text"
+                  value={bugTitle}
+                  onChange={(e) => setBugTitle(e.target.value)}
+                  placeholder="e.g. CORS error on /api/reports endpoint"
+                  required
+                  style={styles.modalInput}
+                />
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Steps to Reproduce & Description</label>
+                <textarea
+                  value={bugDesc}
+                  onChange={(e) => setBugDesc(e.target.value)}
+                  placeholder="1. Go to Reports tab.&#10;2. Select Date range.&#10;3. Observe console error..."
+                  rows={4}
+                  style={styles.modalTextarea}
+                />
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Expectations</label>
+                <textarea
+                  value={bugExpectedBehavior}
+                  onChange={(e) => setBugExpectedBehavior(e.target.value)}
+                  placeholder="What should have happened instead?"
+                  rows={3}
+                  style={styles.modalTextarea}
+                />
+              </div>
+
               <div style={styles.inputGroup}>
                 <label style={styles.modalLabel}>Select Project</label>
                 <select
@@ -453,6 +643,26 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                     {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
                   </select>
                 </div>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Priority</label>
+                  <select
+                    value={bugPriority}
+                    onChange={(e) => setBugPriority(e.target.value)}
+                    style={styles.modalSelect}
+                  >
+                    {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Type</label>
+                  <select
+                    value={bugType}
+                    onChange={(e) => setBugType(e.target.value)}
+                    style={styles.modalSelect}
+                  >
+                    {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
               </div>
 
               <div style={styles.inputGroup}>
@@ -465,29 +675,6 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   <option value="">Unassigned</option>
                   {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
                 </select>
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Bug Title</label>
-                <input
-                  type="text"
-                  value={bugTitle}
-                  onChange={(e) => setBugTitle(e.target.value)}
-                  placeholder="e.g. CORS error on /api/reports endpoint"
-                  required
-                  style={styles.modalInput}
-                />
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Steps to Reproduce & Description</label>
-                <textarea
-                  value={bugDesc}
-                  onChange={(e) => setBugDesc(e.target.value)}
-                  placeholder="1. Go to Reports tab.&#10;2. Select Date range.&#10;3. Observe console error..."
-                  rows={4}
-                  style={styles.modalTextarea}
-                />
               </div>
 
               <div style={styles.inputGroup}>
@@ -564,7 +751,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             <div style={styles.modalHeader}>
               <div>
                 <span style={styles.modalSubheading}>
-                  {activeBug.project ? activeBug.project.name : 'Unknown Project'} • {activeBug.project ? activeBug.project.key : 'BUG'}-{activeBug.id}
+                  {activeBug.project ? activeBug.project.name : 'Unknown Project'} • {formatBugKey(activeBug)}
                 </span>
                 <h3 style={styles.modalTitle}>{activeBug.title}</h3>
               </div>
@@ -574,17 +761,27 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             </div>
 
             <div style={styles.modalBody}>
+              <div style={styles.detailSection}>
+                <h4 style={styles.detailTitle}>Steps to Reproduce / Description</h4>
+                <p style={styles.detailDescText}>{activeBug.description || "No description provided."}</p>
+              </div>
+
+              <div style={styles.detailSection}>
+                <h4 style={styles.detailTitle}>Expectations</h4>
+                <p style={styles.detailDescText}>{activeBug.expected_behavior || "No expectations noted."}</p>
+              </div>
+
               <div style={styles.row}>
                 {/* Status Dropdown */}
                 <div style={{ ...styles.inputGroup, flex: 1 }}>
                   <label style={styles.modalLabel}>Status</label>
                   <select
                     value={activeBug.status}
-                    disabled={!canEdit}
+                    disabled={!canEditFields}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { status: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
+                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
                   >
-                    {BUG_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    {bugStatusOptions.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 {/* Severity Dropdown */}
@@ -592,11 +789,35 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   <label style={styles.modalLabel}>Severity</label>
                   <select
                     value={activeBug.severity}
-                    disabled={!canEdit}
+                    disabled={!canEditFields}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { severity: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
+                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
                   >
                     {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
+                  </select>
+                </div>
+                {/* Priority Dropdown */}
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Priority</label>
+                  <select
+                    value={activeBug.priority}
+                    disabled={!canEditFields}
+                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { priority: e.target.value })}
+                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
+                  >
+                    {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                {/* Type Dropdown */}
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Type</label>
+                  <select
+                    value={activeBug.bug_type}
+                    disabled={!canEditFields}
+                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { bug_type: e.target.value })}
+                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
+                  >
+                    {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
               </div>
@@ -607,9 +828,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   <label style={styles.modalLabel}>Owner</label>
                   <select
                     value={activeBug.owner_id || ''}
-                    disabled={!canEdit}
+                    disabled={!canEditFields}
                     onChange={(e) => handleBugFieldUpdate(activeBug.id, { owner_id: e.target.value ? parseInt(e.target.value) : -1 })}
-                    style={{ ...styles.modalSelect, opacity: canEdit ? 1 : 0.7 }}
+                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
                   >
                     <option value="">Unassigned</option>
                     {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
@@ -622,7 +843,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                       type="checkbox"
                       id="detail-is-blocker"
                       checked={activeBug.is_blocker}
-                      disabled={!canEdit}
+                      disabled={!canEditFields}
                       onChange={(e) => handleBugFieldUpdate(activeBug.id, { is_blocker: e.target.checked })}
                       style={styles.checkbox}
                     />
@@ -631,11 +852,6 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                     </label>
                   </div>
                 </div>
-              </div>
-
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>Steps to Reproduce / Description</h4>
-                <p style={styles.detailDescText}>{activeBug.description || "No description provided."}</p>
               </div>
 
               {activeBug.screenshot_url && (
@@ -653,6 +869,32 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                       style={styles.detailScreenshot}
                     />
                   </a>
+                </div>
+              )}
+
+              {canEdit && (
+                <div style={styles.detailSection}>
+                  <h4 style={styles.detailTitle}>{activeBug.screenshot_url ? 'Replace Screenshot' : 'Add Screenshot'}</h4>
+                  <div
+                    style={styles.screenshotDropZone}
+                    onPaste={handleDetailScreenshotPaste}
+                    tabIndex={0}
+                  >
+                    <div style={styles.screenshotDropHeader}>
+                      <ImagePlus size={18} color="var(--primary-neon)" />
+                      <span>Paste an image here or choose a file</span>
+                    </div>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => uploadDetailScreenshot(e.target.files?.[0])}
+                      style={styles.fileInput}
+                    />
+                    <div style={styles.pasteHint}>
+                      <Clipboard size={12} />
+                      Ctrl+V supports copied screenshots from your clipboard.
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -773,6 +1015,43 @@ const styles = {
     outline: 'none',
     fontSize: '14px',
   },
+  searchRow: {
+    marginBottom: '14px',
+  },
+  searchBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 12px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    maxWidth: '420px',
+  },
+  searchInput: {
+    flex: 1,
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    color: 'var(--header-banner-input-color)',
+    fontSize: '14px',
+    fontFamily: 'inherit',
+  },
+  searchClearBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--header-banner-input-color)',
+    cursor: 'pointer',
+    padding: '2px',
+  },
+  clearFiltersBtn: {
+    alignSelf: 'flex-end',
+    fontSize: '13px',
+    padding: '8px 14px',
+  },
   boardScrollContainer: {
     overflowX: 'auto',
     paddingBottom: '16px',
@@ -854,6 +1133,11 @@ const styles = {
     fontWeight: '700',
     color: 'var(--text-muted)',
   },
+  cardBadgeGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+  },
   sevBadge: {
     fontSize: '9px',
     padding: '2px 6px',
@@ -866,6 +1150,17 @@ const styles = {
     fontWeight: '600',
     color: 'var(--text-strong)',
     lineHeight: '1.4',
+  },
+  bugTypeTag: {
+    fontSize: '9px',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    color: 'var(--text-muted)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '1px 5px',
+    display: 'inline-block',
+    width: 'fit-content',
   },
   cardFooter: {
     display: 'flex',
