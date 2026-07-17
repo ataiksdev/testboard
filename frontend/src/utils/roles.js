@@ -11,3 +11,5 @@ export const ROLE_COLOR_VAR = {
 export const canManageProjects = (role) => ['Admin', 'PM', 'QA'].includes(role);
 export const canManageBugs = (role) => ['Admin', 'Dev', 'QA'].includes(role);
 export const canManageMembers = (role) => ['Admin', 'PM'].includes(role);
+export const canViewReports = (role) => role !== 'Dev';
+export const canEditBugFields = (role) => ['Admin', 'QA'].includes(role);

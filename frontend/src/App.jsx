@@ -6,6 +6,7 @@ import { BugTracker } from './components/BugTracker';
 import { ReportsDashboard } from './components/ReportsDashboard';
 import { AdminPanel } from './components/AdminPanel';
 import { NotificationBell } from './components/NotificationBell';
+import { canViewReports } from './utils/roles';
 import {
   FolderKanban, Bug as BugIcon, FileText, Shield,
   LogOut, Terminal, Menu, X, Moon, Sun, ChevronLeft, ChevronRight
@@ -46,6 +47,13 @@ const AppContent = () => {
     }
   }, [user, activeTab]);
 
+  // Bounce Devs off a stale/shared #reports link
+  useEffect(() => {
+    if (user && activeTab === 'reports' && !canViewReports(user.role)) {
+      setActiveTab('projects');
+    }
+  }, [user, activeTab]);
+
   // If not logged in, render Auth pages (Login/Request Access)
   if (!user) {
     return <AuthPages />;
@@ -63,7 +71,7 @@ const AppContent = () => {
   const navItems = [
     { id: 'projects', label: 'Projects', icon: FolderKanban },
     { id: 'bugs', label: 'Bugs', icon: BugIcon },
-    { id: 'reports', label: 'Reports', icon: FileText },
+    ...(canViewReports(user.role) ? [{ id: 'reports', label: 'Reports', icon: FileText }] : []),
     ...(user.role === 'Admin' ? [{ id: 'admin', label: 'Admin', icon: Shield }] : []),
   ];
 
@@ -125,7 +133,6 @@ const AppContent = () => {
 
         {/* User profile section at the bottom of the sidebar */}
         <div style={styles.sidebarFooter}>
-          <NotificationBell collapsed={collapsed} />
           <button style={styles.themeBtn} onClick={toggleTheme} title={collapsed ? (theme === 'dark' ? 'Light mode' : 'Dark mode') : undefined}>
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
             {!collapsed && (theme === 'dark' ? 'Light mode' : 'Dark mode')}
@@ -167,7 +174,7 @@ const AppContent = () => {
         </header>
 
         {/* Main Section */}
-        <main style={styles.content}>
+        <main style={styles.content} onClick={() => { if (sidebarOpen) setSidebarOpen(false); }}>
           {activeTab === 'projects' && (
             <ProjectTracker onSelectProject={navigateToBugsForProject} />
           )}
@@ -177,7 +184,7 @@ const AppContent = () => {
               onClearProjectFilter={handleClearProjectFilter}
             />
           )}
-          {activeTab === 'reports' && (
+          {activeTab === 'reports' && canViewReports(user.role) && (
             <ReportsDashboard />
           )}
           {activeTab === 'admin' && user.role === 'Admin' && (

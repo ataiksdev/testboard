@@ -498,7 +498,7 @@ export const ReportsDashboard = () => {
                   {reportData.blockers_encountered.map(bug => (
                     <tr key={bug.id} style={styles.tr}>
                       <td style={{ ...styles.td, fontWeight: '700', color: 'var(--primary-neon)' }}>
-                        {bug.project ? bug.project.key : 'BUG'}-{bug.id}
+                        {bug.project ? `${bug.project.key}-${String(bug.project_sequence != null ? bug.project_sequence : bug.id).padStart(3, '0')}` : `BUG-${bug.id}`}
                       </td>
                       <td style={styles.td}>{bug.title}</td>
                       <td style={styles.td}>
