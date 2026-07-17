@@ -125,6 +125,22 @@ class ProjectDocumentOut(BaseModel):
         orm_mode = True
         from_attributes = True
 
+# Notification Schemas
+class NotificationOut(BaseModel):
+    id: int
+    type: str
+    title: str
+    body: Optional[str] = None
+    link: Optional[str] = None
+    project_id: Optional[int] = None
+    bug_id: Optional[int] = None
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Version Schemas
 class VersionBase(BaseModel):
     version_name: str

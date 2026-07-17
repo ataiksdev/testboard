@@ -4,7 +4,7 @@ import io
 import re
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,9 +12,15 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import os
+from dotenv import load_dotenv
+
+# Load .env before any backend module reads its config at import time
+# (backend.auth reads TESTBOARD_SECRET_KEY, backend.storage/notifications
+# read their own TESTBOARD_* vars). Safe no-op if .env doesn't exist.
+load_dotenv()
 
 from backend.database import engine, Base, get_db, SessionLocal
-from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument, PasswordResetRequest
+from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument, PasswordResetRequest, Notification
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
     PasswordResetRequestCreate, PasswordResetRequestOut, PasswordResetResolve,
@@ -22,6 +28,7 @@ from backend.schemas import (
     ProjectCreate, ProjectOut, ProjectUpdate,
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
     ProjectDocumentOut,
+    NotificationOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     BugCreate, BugOut, BugUpdate,
     CommentCreate, CommentOut,
@@ -37,6 +44,7 @@ from backend.reporter import (
     generate_csv_version_readiness, generate_csv_team_workload, generate_csv_activity_timeline
 )
 from backend.storage import get_storage_backend
+from backend.notifications import notify, notify_admins, notify_project_members
 
 # UPLOADS_DIR must match storage.py's LocalDiskStorage default so the /uploads
 # static mount always serves whatever the local backend actually writes to.
@@ -180,7 +188,7 @@ def save_screenshot_data(screenshot_data: Optional[str]) -> Optional[str]:
 # ==================== AUTHENTICATION ENDPOINTS ====================
 
 @app.post("/api/auth/register", response_model=UserOut)
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
+def register(user_in: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     normalized_email = user_in.email.lower()
 
     # Check if email exists
@@ -205,6 +213,18 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    if role == "Pending":
+        notify_admins(
+            db,
+            notif_type="access_requested",
+            title=f"New access request from {new_user.full_name}",
+            body=f"{new_user.full_name} ({new_user.email}) requested access to TestBoard.",
+            link="#admin",
+            background_tasks=background_tasks,
+            email=True,
+        )
+
     return new_user
 
 @app.post("/api/auth/login", response_model=Token)
@@ -236,7 +256,7 @@ def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @app.post("/api/auth/forgot-password")
-def forgot_password(request_in: PasswordResetRequestCreate, db: Session = Depends(get_db)):
+def forgot_password(request_in: PasswordResetRequestCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == request_in.email.lower()).first()
     # Always return a generic response so this endpoint can't be used to
     # enumerate which emails have accounts.
@@ -254,7 +274,61 @@ def forgot_password(request_in: PasswordResetRequestCreate, db: Session = Depend
         db.add(PasswordResetRequest(user_id=user.id))
         db.commit()
 
+        notify_admins(
+            db,
+            notif_type="password_reset_requested",
+            title=f"Password reset requested by {user.full_name}",
+            body=f"{user.full_name} ({user.email}) requested a password reset.",
+            link="#admin",
+            background_tasks=background_tasks,
+            email=True,
+        )
+
     return generic_response
+
+
+# ==================== NOTIFICATIONS ENDPOINTS ====================
+
+@app.get("/api/notifications", response_model=List[NotificationOut])
+def list_notifications(
+    unread_only: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Notification).filter(Notification.user_id == current_user.id)
+    if unread_only:
+        query = query.filter(Notification.is_read == False)
+    return query.order_by(Notification.created_at.desc()).limit(50).all()
+
+@app.get("/api/notifications/unread-count")
+def get_unread_notification_count(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    count = db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False
+    ).count()
+    return {"count": count}
+
+@app.post("/api/notifications/{notification_id}/read", response_model=NotificationOut)
+def mark_notification_read(notification_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    notification = db.query(Notification).filter(
+        Notification.id == notification_id,
+        Notification.user_id == current_user.id
+    ).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    notification.is_read = True
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.is_read == False
+    ).update({"is_read": True})
+    db.commit()
+    return {"message": "All notifications marked as read"}
 
 
 # ==================== ADMIN ENDPOINTS ====================
@@ -301,7 +375,7 @@ def dismiss_password_reset(request_id: int, admin: User = Depends(get_current_ad
     return reset_request
 
 @app.post("/api/admin/users/{user_id}/approve", response_model=UserOut)
-def approve_user(user_id: int, approval: UserApprove, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+def approve_user(user_id: int, approval: UserApprove, background_tasks: BackgroundTasks, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
     if approval.role not in ASSIGNABLE_ROLES:
         raise HTTPException(status_code=400, detail=f"Role must be one of {ASSIGNABLE_ROLES}")
     user = db.query(User).filter(User.id == user_id).first()
@@ -310,6 +384,17 @@ def approve_user(user_id: int, approval: UserApprove, admin: User = Depends(get_
     user.role = approval.role
     db.commit()
     db.refresh(user)
+
+    notify(
+        db,
+        user.id,
+        notif_type="account_approved",
+        title="Your access to TestBoard has been approved",
+        body=f"You've been approved as {user.role}. You can now sign in.",
+        background_tasks=background_tasks,
+        email=True,
+    )
+
     return user
 
 @app.post("/api/admin/users/{user_id}/reject")
@@ -345,7 +430,7 @@ def _count_active_admins(db: Session, exclude_user_id: Optional[int] = None) -> 
     return query.count()
 
 @app.put("/api/admin/users/{user_id}", response_model=UserOut)
-def update_user_admin(user_id: int, update: UserUpdate, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+def update_user_admin(user_id: int, update: UserUpdate, background_tasks: BackgroundTasks, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -356,6 +441,7 @@ def update_user_admin(user_id: int, update: UserUpdate, admin: User = Depends(ge
     if (demoting_admin or deactivating_admin) and _count_active_admins(db, exclude_user_id=user.id) == 0:
         raise HTTPException(status_code=400, detail="Cannot remove the last active Admin")
 
+    old_role = user.role
     if update.role is not None:
         if update.role not in ASSIGNABLE_ROLES:
             raise HTTPException(status_code=400, detail=f"Role must be one of {ASSIGNABLE_ROLES}")
@@ -367,6 +453,18 @@ def update_user_admin(user_id: int, update: UserUpdate, admin: User = Depends(ge
 
     db.commit()
     db.refresh(user)
+
+    if update.role is not None and update.role != old_role:
+        notify(
+            db,
+            user.id,
+            notif_type="role_changed",
+            title="Your TestBoard role has changed",
+            body=f"Your role was changed from {old_role} to {user.role}.",
+            background_tasks=background_tasks,
+            email=True,
+        )
+
     return user
 
 @app.get("/api/admin/users/{user_id}/activity", response_model=List[ActivityLogOut])
@@ -449,7 +547,7 @@ def get_project(project_id: int, current_user: User = Depends(get_current_user),
     return project
 
 @app.put("/api/projects/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, project_in: ProjectUpdate, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+def update_project(project_id: int, project_in: ProjectUpdate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -486,7 +584,18 @@ def update_project(project_id: int, project_in: ProjectUpdate, current_user: Use
         )
         db.add(log)
         db.commit()
-        
+
+        notify_project_members(
+            db,
+            project.id,
+            notif_type="project_status_change",
+            title=f"{project.name} moved to {project.status}",
+            body=f"{current_user.full_name} changed the status from {old_status} to {project.status}.",
+            link="#projects",
+            background_tasks=background_tasks,
+            exclude_user_id=current_user.id,
+        )
+
     return project
 
 
@@ -638,14 +747,14 @@ def delete_project_document(
 # ==================== BUGS ENDPOINTS ====================
 
 @app.post("/api/bugs", response_model=BugOut)
-def create_bug(bug_in: BugCreate, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
+def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
     # Verify project exists
-    require_project(db, bug_in.project_id)
+    project = require_project(db, bug_in.project_id)
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug_in.project_id)
     if bug_in.owner_id is not None:
         require_active_user(db, bug_in.owner_id, detail="Bug owner not found")
-        
+
     new_bug = Bug(
         project_id=bug_in.project_id,
         version_id=bug_in.version_id,
@@ -661,7 +770,7 @@ def create_bug(bug_in: BugCreate, current_user: User = Depends(require_roles("Ad
     db.add(new_bug)
     db.commit()
     db.refresh(new_bug)
-    
+
     # Log activity
     log = ActivityLog(
         user_id=current_user.id,
@@ -672,7 +781,34 @@ def create_bug(bug_in: BugCreate, current_user: User = Depends(require_roles("Ad
     )
     db.add(log)
     db.commit()
-    
+
+    if new_bug.owner_id is not None and new_bug.owner_id != current_user.id:
+        notify(
+            db,
+            new_bug.owner_id,
+            notif_type="bug_assigned",
+            title=f"You've been assigned: {new_bug.title}",
+            body=f"{current_user.full_name} assigned you a bug in {project.name}.",
+            link="#bugs",
+            project_id=new_bug.project_id,
+            bug_id=new_bug.id,
+            background_tasks=background_tasks,
+            email=True,
+        )
+
+    if new_bug.is_blocker:
+        notify_project_members(
+            db,
+            new_bug.project_id,
+            notif_type="bug_blocker",
+            title=f"New blocker: {new_bug.title}",
+            body=f"{current_user.full_name} flagged a new blocker in {project.name}.",
+            link="#bugs",
+            bug_id=new_bug.id,
+            background_tasks=background_tasks,
+            exclude_user_id=current_user.id,
+        )
+
     return new_bug
 
 @app.get("/api/bugs", response_model=List[BugOut])
@@ -683,13 +819,15 @@ def list_bugs(project_id: Optional[int] = None, current_user: User = Depends(get
     return query.all()
 
 @app.put("/api/bugs/{bug_id}", response_model=BugOut)
-def update_bug(bug_id: int, bug_in: BugUpdate, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
+def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
     bug = db.query(Bug).filter(Bug.id == bug_id).first()
     if not bug:
         raise HTTPException(status_code=404, detail="Bug not found")
-        
+
     old_status = bug.status
-    
+    old_owner_id = bug.owner_id
+    old_is_blocker = bug.is_blocker
+
     # Apply updates
     if bug_in.title is not None:
         bug.title = bug_in.title
@@ -722,7 +860,7 @@ def update_bug(bug_id: int, bug_in: BugUpdate, current_user: User = Depends(requ
         
     db.commit()
     db.refresh(bug)
-    
+
     # Log status change
     if bug_in.status is not None and old_status != bug.status:
         activity_type = "bug_resolved" if bug.status in ["Resolved", "Closed"] else "bug_status_change"
@@ -736,17 +874,59 @@ def update_bug(bug_id: int, bug_in: BugUpdate, current_user: User = Depends(requ
         )
         db.add(log)
         db.commit()
-        
+
+        interested_ids = {bug.reporter_id, bug.owner_id} - {None, current_user.id}
+        for recipient_id in interested_ids:
+            notify(
+                db,
+                recipient_id,
+                notif_type=activity_type,
+                title=f"{bug.title}: {old_status} → {bug.status}",
+                body=f"{current_user.full_name} updated this bug's status.",
+                link="#bugs",
+                project_id=bug.project_id,
+                bug_id=bug.id,
+                background_tasks=background_tasks,
+            )
+
+    if bug.owner_id is not None and bug.owner_id != old_owner_id and bug.owner_id != current_user.id:
+        notify(
+            db,
+            bug.owner_id,
+            notif_type="bug_assigned",
+            title=f"You've been assigned: {bug.title}",
+            body=f"{current_user.full_name} assigned you this bug.",
+            link="#bugs",
+            project_id=bug.project_id,
+            bug_id=bug.id,
+            background_tasks=background_tasks,
+            email=True,
+        )
+
+    if bug.is_blocker and not old_is_blocker:
+        notify_project_members(
+            db,
+            bug.project_id,
+            notif_type="bug_blocker",
+            title=f"New blocker: {bug.title}",
+            body=f"{current_user.full_name} flagged this bug as a blocker.",
+            link="#bugs",
+            bug_id=bug.id,
+            background_tasks=background_tasks,
+            exclude_user_id=current_user.id,
+        )
+
     return bug
 
 
 # ==================== COMMENTS ENDPOINTS ====================
 
 @app.post("/api/comments", response_model=CommentOut)
-def create_comment(comment_in: CommentCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Requires at least project_id or bug_id
     if not comment_in.project_id and not comment_in.bug_id:
         raise HTTPException(status_code=400, detail="Comment must belong to a project or a bug")
+    bug = None
     if comment_in.project_id:
         require_project(db, comment_in.project_id)
     if comment_in.bug_id:
@@ -755,7 +935,7 @@ def create_comment(comment_in: CommentCreate, current_user: User = Depends(get_c
             raise HTTPException(status_code=404, detail="Bug not found")
         if comment_in.project_id and bug.project_id != comment_in.project_id:
             raise HTTPException(status_code=400, detail="Bug does not belong to project")
-        
+
     new_comment = Comment(
         user_id=current_user.id,
         project_id=comment_in.project_id,
@@ -765,18 +945,45 @@ def create_comment(comment_in: CommentCreate, current_user: User = Depends(get_c
     db.add(new_comment)
     db.commit()
     db.refresh(new_comment)
-    
+
     # Log activity
+    snippet = comment_in.text[:50] + "..." if len(comment_in.text) > 50 else comment_in.text
     log = ActivityLog(
         user_id=current_user.id,
         project_id=comment_in.project_id,
         bug_id=comment_in.bug_id,
         activity_type="comment_added",
-        new_value=comment_in.text[:50] + "..." if len(comment_in.text) > 50 else comment_in.text
+        new_value=snippet
     )
     db.add(log)
     db.commit()
-    
+
+    if bug is not None:
+        interested_ids = {bug.reporter_id, bug.owner_id} - {None, current_user.id}
+        for recipient_id in interested_ids:
+            notify(
+                db,
+                recipient_id,
+                notif_type="comment_added",
+                title=f"New comment on {bug.title}",
+                body=f"{current_user.full_name}: {snippet}",
+                link="#bugs",
+                project_id=bug.project_id,
+                bug_id=bug.id,
+                background_tasks=background_tasks,
+            )
+    elif comment_in.project_id:
+        notify_project_members(
+            db,
+            comment_in.project_id,
+            notif_type="comment_added",
+            title="New project comment",
+            body=f"{current_user.full_name}: {snippet}",
+            link="#projects",
+            background_tasks=background_tasks,
+            exclude_user_id=current_user.id,
+        )
+
     return new_comment
 
 @app.get("/api/comments", response_model=List[CommentOut])

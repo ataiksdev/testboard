@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.database import Base, get_db
 from backend.main import app
-from backend.models import User, Project, Bug, Version, Comment, ActivityLog, ProjectMember
+from backend.models import User, Project, Bug, Version, Comment, ActivityLog, ProjectMember, Notification
 
 # Use an in-memory SQLite database for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -400,3 +400,210 @@ def test_project_document_permissions(tmp_path, monkeypatch):
 
     resp = client.delete(f"/api/projects/{project['id']}/documents/{doc['id']}", headers=dev_headers)
     assert resp.status_code == 403
+
+
+# ==================== NOTIFICATIONS ====================
+
+class _FakeSMTP:
+    """Stand-in for smtplib.SMTP that records what would have been sent."""
+    instances = []
+
+    def __init__(self, host, port, timeout=10):
+        self.host = host
+        self.port = port
+        self.started_tls = False
+        self.logged_in = None
+        self.sent = None
+        _FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self):
+        self.started_tls = True
+
+    def login(self, user, password):
+        self.logged_in = (user, password)
+
+    def sendmail(self, from_addr, to_addrs, msg):
+        self.sent = (from_addr, to_addrs, msg)
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    _FakeSMTP.instances = []
+    monkeypatch.setattr("backend.notifications.smtplib.SMTP", _FakeSMTP)
+    monkeypatch.setenv("TESTBOARD_SMTP_HOST", "smtp.test.local")
+    monkeypatch.setenv("TESTBOARD_SMTP_PORT", "587")
+    monkeypatch.setenv("TESTBOARD_SMTP_USER", "bot@test.local")
+    monkeypatch.setenv("TESTBOARD_SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("TESTBOARD_SMTP_FROM", "bot@test.local")
+    return _FakeSMTP
+
+
+def test_send_email_noop_without_smtp_configured(monkeypatch):
+    from backend.notifications import send_email
+    monkeypatch.delenv("TESTBOARD_SMTP_HOST", raising=False)
+
+    calls = []
+    monkeypatch.setattr("backend.notifications.smtplib.SMTP", lambda *a, **k: calls.append(1))
+
+    send_email("someone@test.com", "Subject", "Body")  # must not raise
+    assert calls == []
+
+
+def test_send_email_sends_when_configured(fake_smtp):
+    from backend.notifications import send_email
+    send_email("someone@test.com", "Hello", "World")
+
+    assert len(fake_smtp.instances) == 1
+    sent = fake_smtp.instances[0]
+    assert sent.started_tls is True
+    assert sent.logged_in == ("bot@test.local", "secret")
+    assert sent.sent[0] == "bot@test.local"
+    assert sent.sent[1] == ["someone@test.com"]
+
+
+def test_send_email_swallows_delivery_errors(monkeypatch):
+    from backend.notifications import send_email
+    monkeypatch.setenv("TESTBOARD_SMTP_HOST", "smtp.test.local")
+    monkeypatch.setenv("TESTBOARD_SMTP_FROM", "bot@test.local")
+
+    class _BoomSMTP:
+        def __init__(self, *a, **k):
+            raise ConnectionRefusedError("nope")
+
+    monkeypatch.setattr("backend.notifications.smtplib.SMTP", _BoomSMTP)
+    send_email("someone@test.com", "Hello", "World")  # must not raise
+
+
+def test_notify_creates_notification_row():
+    from backend.notifications import notify
+    db = TestingSessionLocal()
+    try:
+        user = User(email="rowtest@test.com", hashed_password="x", full_name="Row Test", role="QA")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        notification = notify(db, user.id, notif_type="bug_assigned", title="Test title", body="Test body", link="#bugs")
+        assert notification.id is not None
+        assert notification.user_id == user.id
+        assert notification.is_read is False
+
+        stored = db.query(Notification).filter(Notification.id == notification.id).first()
+        assert stored.title == "Test title"
+    finally:
+        db.close()
+
+
+def test_register_notifies_admins(fake_smtp):
+    admin_headers = _make_admin()
+
+    resp = client.post("/api/auth/register", json={
+        "email": "newbie@test.com", "password": "password123", "full_name": "New Bie"
+    })
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications", headers=admin_headers)
+    assert resp.status_code == 200
+    notifs = resp.json()
+    assert any(n["type"] == "access_requested" for n in notifs)
+
+    resp = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert resp.json()["count"] >= 1
+
+    # Access requests are email-worthy
+    assert len(fake_smtp.instances) == 1
+
+
+def test_approve_user_notifies_new_user(fake_smtp):
+    admin_headers = _make_admin()
+    client.post("/api/auth/register", json={"email": "approveme@test.com", "password": "password123", "full_name": "Approve Me"})
+    pending = client.get("/api/admin/users/pending", headers=admin_headers).json()
+    target = next(u for u in pending if u["email"] == "approveme@test.com")
+
+    fake_smtp.instances = []  # ignore the access-request email from registration
+    resp = client.post(f"/api/admin/users/{target['id']}/approve", json={"role": "Dev"}, headers=admin_headers)
+    assert resp.status_code == 200
+
+    login_resp = client.post("/api/auth/login", data={"username": "approveme@test.com", "password": "password123"})
+    token = login_resp.json()["access_token"]
+    user_headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.get("/api/notifications", headers=user_headers)
+    notifs = resp.json()
+    assert any(n["type"] == "account_approved" for n in notifs)
+    assert len(fake_smtp.instances) == 1
+
+
+def test_bug_assignment_notifies_owner(fake_smtp):
+    admin_headers = _make_admin()
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "assignee@test.com", "Assignee Dev", "Dev")
+
+    project = client.post("/api/projects", json={"name": "Notif Project", "key": "NOTP"}, headers=admin_headers).json()
+
+    fake_smtp.instances = []
+    resp = client.post("/api/bugs", json={
+        "title": "Assigned bug", "project_id": project["id"], "owner_id": dev_id
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications", headers=dev_headers)
+    notifs = resp.json()
+    assert any(n["type"] == "bug_assigned" for n in notifs)
+    assert len(fake_smtp.instances) == 1  # bug assignment is email-worthy
+
+
+def test_project_status_change_notifies_members_without_email(fake_smtp):
+    admin_headers = _make_admin()
+    pm_headers, pm_id = _make_user_with_role(admin_headers, "statusmember@test.com", "Status Member", "PM")
+
+    project = client.post("/api/projects", json={"name": "Status Project", "key": "STAP"}, headers=admin_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": pm_id}, headers=admin_headers)
+
+    fake_smtp.instances = []
+    resp = client.put(f"/api/projects/{project['id']}", json={"status": "Blocked"}, headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications", headers=pm_headers)
+    notifs = resp.json()
+    assert any(n["type"] == "project_status_change" for n in notifs)
+
+    # Status changes are in-app only, no email
+    assert len(fake_smtp.instances) == 0
+
+
+def test_notification_mark_read_and_read_all():
+    from backend.notifications import notify
+    admin_headers = _make_admin()
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+
+    db = TestingSessionLocal()
+    try:
+        notify(db, me["id"], notif_type="test", title="One")
+        notify(db, me["id"], notif_type="test", title="Two")
+    finally:
+        db.close()
+
+    resp = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert resp.json()["count"] == 2
+
+    notifs = client.get("/api/notifications", headers=admin_headers).json()
+    first_id = notifs[0]["id"]
+
+    resp = client.post(f"/api/notifications/{first_id}/read", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["is_read"] is True
+
+    resp = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert resp.json()["count"] == 1
+
+    resp = client.post("/api/notifications/read-all", headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert resp.json()["count"] == 0
