@@ -10,9 +10,11 @@ export const AuthProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Set API base URL depending on window environment
-  const API_URL = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
-    ? 'http://127.0.0.1:8000'
+  // In dev, the API runs on a separate port (8090) from the Vite dev server,
+  // regardless of whether the page was loaded via localhost or a LAN IP.
+  // In a production build, frontend and backend share an origin.
+  const API_URL = import.meta.env.DEV
+    ? `http://${window.location.hostname}:8090`
     : window.location.origin;
 
   useEffect(() => {
@@ -115,6 +117,22 @@ export const AuthProvider = ({ children }) => {
     setIsLoading(false);
   };
 
+  const requestPasswordReset = async (email) => {
+    try {
+      const response = await fetch(`${API_URL}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email })
+      });
+      const data = await response.json();
+      return { success: response.ok, message: data.message || data.detail };
+    } catch (err) {
+      return { success: false, message: 'Could not reach the server. Please try again.' };
+    }
+  };
+
   const value = {
     user,
     token,
@@ -123,6 +141,7 @@ export const AuthProvider = ({ children }) => {
     login,
     register,
     logout,
+    requestPasswordReset,
     API_URL,
     fetchUserProfile
   };

@@ -9,7 +9,11 @@ export const AuthPages = () => {
   const [fullName, setFullName] = useState('');
   const [accessPending, setAccessPending] = useState(false);
   const [regSuccess, setRegSuccess] = useState(false);
-  const { login, register, error, isLoading } = useAuth();
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetMessage, setResetMessage] = useState(null);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const { login, register, requestPasswordReset, error, isLoading } = useAuth();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -33,6 +37,28 @@ export const AuthPages = () => {
     setRegSuccess(false);
   };
 
+  const openForgotPassword = () => {
+    setResetEmail(email);
+    setResetMessage(null);
+    setShowForgotPassword(true);
+  };
+
+  const closeForgotPassword = () => {
+    setShowForgotPassword(false);
+    setResetMessage(null);
+    setResetEmail('');
+  };
+
+  const handleForgotPasswordSubmit = async (e) => {
+    e.preventDefault();
+    setResetSubmitting(true);
+    const result = await requestPasswordReset(resetEmail);
+    setResetMessage(result.message || (result.success
+      ? "If an account exists for this email, an admin has been notified and will be in touch to reset your password."
+      : "Something went wrong. Please try again."));
+    setResetSubmitting(false);
+  };
+
   return (
     <div style={styles.container}>
       <div style={styles.shapeSquare} />
@@ -47,7 +73,63 @@ export const AuthPages = () => {
         </div>
         <p style={styles.subtitle}>QA Project Tracker & Status Reporting</p>
 
-        {accessPending ? (
+        {showForgotPassword ? (
+          resetMessage ? (
+            <div style={styles.pendingContainer} className="animate-slide-up">
+              <CheckCircle size={48} color="var(--primary-neon)" style={{ marginBottom: '16px' }} />
+              <h2 style={styles.pendingTitle}>Request Submitted</h2>
+              <p style={styles.pendingText}>{resetMessage}</p>
+              <button
+                className="btn-primary"
+                style={{ width: '100%', padding: '12px' }}
+                onClick={closeForgotPassword}
+              >
+                Back to Login
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleForgotPasswordSubmit} style={styles.form} className="animate-fade-in">
+              <h2 style={styles.formTitle}>Reset Password</h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '-12px' }}>
+                Enter your account email. An administrator will be notified to reset your password for you.
+              </p>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Email Address</label>
+                <div style={styles.inputWrapper}>
+                  <Mail size={18} style={styles.inputIcon} />
+                  <input
+                    type="email"
+                    placeholder="name@company.com"
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    required
+                    style={styles.input}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={resetSubmitting}
+                style={styles.submitBtn}
+              >
+                {resetSubmitting ? "Submitting..." : "Notify Admin"}
+              </button>
+
+              <div style={styles.switchMode}>
+                <button
+                  type="button"
+                  onClick={closeForgotPassword}
+                  style={styles.switchBtn}
+                >
+                  Back to Login
+                </button>
+              </div>
+            </form>
+          )
+        ) : accessPending ? (
           <div style={styles.pendingContainer} className="animate-slide-up">
             <CheckCircle size={48} color="var(--primary-neon)" style={{ marginBottom: '16px' }} />
             <h2 style={styles.pendingTitle}>
@@ -119,6 +201,15 @@ export const AuthPages = () => {
                   style={styles.input}
                 />
               </div>
+              {isLogin && (
+                <button
+                  type="button"
+                  onClick={openForgotPassword}
+                  style={styles.forgotPasswordBtn}
+                >
+                  Forgot password?
+                </button>
+              )}
             </div>
 
             <button
@@ -265,6 +356,16 @@ const styles = {
     fontSize: '15px',
     outline: 'none',
     transition: 'border-color 0.2s',
+  },
+  forgotPasswordBtn: {
+    alignSelf: 'flex-end',
+    background: 'none',
+    border: 'none',
+    color: 'var(--primary-neon)',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    textDecoration: 'underline',
   },
   errorAlert: {
     background: 'var(--danger-bg)',

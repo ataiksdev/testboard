@@ -1,9 +1,77 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { 
-  FileText, Calendar, Download, Printer, Copy, Check, 
-  Bug, AlertTriangle, ArrowRight, Clock, MessageSquare, RefreshCw
+import {
+  FileText, Calendar, Printer, Copy, Check,
+  Bug as BugIcon, AlertTriangle, ArrowRight, MessageSquare, RefreshCw,
+  FolderKanban, CheckCircle, Users, GitBranch, BarChart3
 } from 'lucide-react';
+
+const SEVERITY_ORDER = ['Low', 'Medium', 'High', 'Critical'];
+const SEVERITY_COLORS = {
+  Low: 'var(--sev-low)',
+  Medium: 'var(--sev-medium)',
+  High: 'var(--sev-high)',
+  Critical: 'var(--sev-critical)',
+};
+const STATUS_ORDER = ['Open', 'In Progress', 'In QA', 'Resolved', 'Closed'];
+const VERSION_STATUS_COLOR = {
+  Planning: 'var(--text-muted)',
+  QA: 'var(--accent-mustard)',
+  Released: 'var(--primary-neon)',
+};
+const ACTIVITY_ICONS = {
+  project_created: FolderKanban,
+  project_status_change: RefreshCw,
+  bug_created: BugIcon,
+  bug_status_change: RefreshCw,
+  bug_resolved: CheckCircle,
+  comment_added: MessageSquare,
+  document_uploaded: FileText,
+};
+const EXPORTS = [
+  { key: 'bugs', label: 'Bugs CSV', needsDates: true, filenameBase: 'qa_bugs_report' },
+  { key: 'projects', label: 'Project Transitions CSV', needsDates: true, filenameBase: 'qa_project_transitions' },
+  { key: 'versions', label: 'Version Readiness CSV', needsDates: false, filenameBase: 'qa_version_readiness' },
+  { key: 'workload', label: 'Team Workload CSV', needsDates: true, filenameBase: 'qa_team_workload' },
+  { key: 'activity', label: 'Activity Timeline CSV', needsDates: true, filenameBase: 'qa_activity_timeline' },
+];
+
+const describeActivity = (log) => {
+  const who = log.user ? log.user.full_name : 'System';
+  const bugRef = log.bug_title ? `"${log.bug_title}"` : (log.bug_id ? `Bug #${log.bug_id}` : 'a bug');
+  const projRef = log.project_name || 'a project';
+  switch (log.activity_type) {
+    case 'project_created':
+      return `${who} created project ${projRef}`;
+    case 'project_status_change':
+      return `${who} moved ${projRef}`;
+    case 'bug_created':
+      return `${who} logged ${bugRef} in ${projRef}`;
+    case 'bug_status_change':
+      return `${who} moved ${bugRef}`;
+    case 'bug_resolved':
+      return `${who} resolved ${bugRef}`;
+    case 'comment_added':
+      return `${who} commented on ${log.bug_title ? bugRef : projRef}`;
+    case 'document_uploaded':
+      return `${who} uploaded a document to ${projRef}`;
+    default:
+      return `${who} — ${log.activity_type.replace(/_/g, ' ')}`;
+  }
+};
+
+const DistributionBar = ({ label, count, total, color }) => {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+  return (
+    <div style={styles.distRow}>
+      <span style={styles.distLabel}>{label}</span>
+      <div style={styles.distTrack}>
+        <div style={{ ...styles.distFill, width: `${pct}%`, background: color }} />
+      </div>
+      <span style={styles.distCount}>{count}</span>
+    </div>
+  );
+};
 
 export const ReportsDashboard = () => {
   const getPastDateStr = (daysAgo) => {
@@ -18,20 +86,32 @@ export const ReportsDashboard = () => {
 
   const [startDate, setStartDate] = useState(getPastDateStr(7));
   const [endDate, setEndDate] = useState(getTodayDateStr());
+  const [projectId, setProjectId] = useState('');
+  const [projects, setProjects] = useState([]);
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
-  
+
   const { token, API_URL } = useAuth();
 
-  useEffect(() => {
-    fetchReport();
-  }, []);
+  const fetchProjects = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) setProjects(await response.json());
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
-  const fetchReport = async () => {
+  const fetchReport = async (overrideProjectId) => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_URL}/api/reports?start_date=${startDate}&end_date=${endDate}`, {
+      const scopeId = overrideProjectId !== undefined ? overrideProjectId : projectId;
+      const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
+      if (scopeId) params.set('project_id', scopeId);
+      const response = await fetch(`${API_URL}/api/reports?${params.toString()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!response.ok) throw new Error("Failed to compile report");
@@ -45,6 +125,12 @@ export const ReportsDashboard = () => {
     }
   };
 
+  useEffect(() => {
+    fetchProjects();
+    fetchReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleCopySummary = () => {
     if (!reportData) return;
     navigator.clipboard.writeText(reportData.summary_paragraph);
@@ -56,44 +142,50 @@ export const ReportsDashboard = () => {
     window.print();
   };
 
-  const getExportBugsUrl = () => {
-    return `${API_URL}/api/reports/export/bugs?start_date=${startDate}&end_date=${endDate}`;
+  const handleDownloadCsv = (exportKey) => {
+    const exp = EXPORTS.find(x => x.key === exportKey);
+    if (!exp) return;
+
+    const params = new URLSearchParams();
+    if (exp.needsDates) {
+      params.set('start_date', startDate);
+      params.set('end_date', endDate);
+    }
+    if (projectId) params.set('project_id', projectId);
+
+    const url = `${API_URL}/api/reports/export/${exp.key}?${params.toString()}`;
+
+    fetch(url, { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(response => {
+        if (!response.ok) throw new Error("Failed to download CSV");
+        return response.blob();
+      })
+      .then(blob => {
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = exp.needsDates
+          ? `${exp.filenameBase}_${startDate}_to_${endDate}.csv`
+          : `${exp.filenameBase}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+      })
+      .catch(err => alert(err.message));
   };
 
-  const getExportProjectsUrl = () => {
-    return `${API_URL}/api/reports/export/projects?start_date=${startDate}&end_date=${endDate}`;
-  };
-
-  const handleDownloadCsv = (type) => {
-    // We can fetch with Authorization header and download via Blob to avoid token in query string if desired
-    // Let's do a clean fetch that downloads the file directly
-    const url = type === 'bugs' ? getExportBugsUrl() : getExportProjectsUrl();
-    
-    // We trigger download by fetching with credentials and saving blob
-    fetch(url, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-    .then(response => {
-      if (!response.ok) throw new Error("Failed to download CSV");
-      return response.blob();
-    })
-    .then(blob => {
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = type === 'bugs' 
-        ? `qa_bugs_report_${startDate}_to_${endDate}.csv`
-        : `qa_projects_movement_${startDate}_to_${endDate}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    })
-    .catch(err => alert(err.message));
-  };
+  const severityTotal = reportData
+    ? SEVERITY_ORDER.reduce((sum, key) => sum + (reportData.severity_breakdown[key] || 0), 0)
+    : 0;
+  const statusTotal = reportData
+    ? STATUS_ORDER.reduce((sum, key) => sum + (reportData.status_breakdown[key] || 0), 0)
+    : 0;
+  const showProjectColumn = !projectId;
 
   return (
     <div style={styles.container} className="print-container">
-      {/* Date Selectors and Action Bar (Hidden when printing) */}
+      {/* Date/Scope Selectors and Action Bar (Hidden when printing) */}
       <div style={styles.actionBar} className="no-print">
         <div style={styles.headerTitleSec}>
           <FileText size={24} color="var(--primary-neon)" />
@@ -101,6 +193,15 @@ export const ReportsDashboard = () => {
         </div>
 
         <div style={styles.controls}>
+          <select
+            value={projectId}
+            onChange={(e) => { setProjectId(e.target.value); fetchReport(e.target.value); }}
+            style={styles.projectSelect}
+          >
+            <option value="">All Projects</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+
           <div style={styles.datePickerGroup}>
             <Calendar size={16} color="var(--text-muted)" />
             <input
@@ -110,17 +211,17 @@ export const ReportsDashboard = () => {
               style={styles.dateInput}
             />
             <span style={{ color: 'var(--text-subtle)' }}>to</span>
-            <input 
-              type="date" 
-              value={endDate} 
+            <input
+              type="date"
+              value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
               style={styles.dateInput}
             />
           </div>
 
-          <button 
-            className="btn-secondary" 
-            onClick={fetchReport} 
+          <button
+            className="btn-secondary"
+            onClick={() => fetchReport()}
             disabled={loading}
             style={styles.actionBtn}
           >
@@ -130,20 +231,17 @@ export const ReportsDashboard = () => {
 
           {reportData && (
             <>
-              <button 
-                className="btn-secondary" 
-                onClick={() => handleDownloadCsv('bugs')}
-                style={styles.actionBtn}
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) handleDownloadCsv(e.target.value);
+                  e.target.value = "";
+                }}
+                style={styles.exportSelect}
               >
-                <Download size={14} /> Bugs CSV
-              </button>
-              <button 
-                className="btn-secondary" 
-                onClick={() => handleDownloadCsv('projects')}
-                style={styles.actionBtn}
-              >
-                <Download size={14} /> Projects CSV
-              </button>
+                <option value="">Export CSV...</option>
+                {EXPORTS.map(exp => <option key={exp.key} value={exp.key}>{exp.label}</option>)}
+              </select>
               <button
                 className="btn-primary"
                 onClick={triggerPrint}
@@ -160,13 +258,13 @@ export const ReportsDashboard = () => {
 
       {reportData && !loading && (
         <div className="animate-fade-in" style={styles.reportLayout}>
-          
-          {/* Email-Friendly Summary (Hidden when printing? No, user wants it at the top of printed report too! Let's display it prominently) */}
+
+          {/* Email-Friendly Summary */}
           <div className="glass-panel" style={styles.summaryBox}>
             <div style={styles.summaryHeader}>
               <h3 style={styles.sectionTitleDisplay}>Email-Friendly Status Summary</h3>
-              <button 
-                className="btn-secondary no-print" 
+              <button
+                className="btn-secondary no-print"
                 onClick={handleCopySummary}
                 style={styles.copyBtn}
               >
@@ -209,38 +307,169 @@ export const ReportsDashboard = () => {
             </div>
           </div>
 
-          {/* Project Movement Section */}
+          {/* Severity & Status Distribution */}
+          <div style={styles.distGrid}>
+            <div className="glass-panel" style={styles.sectionPanel}>
+              <h3 style={styles.panelTitle}>
+                <BarChart3 size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
+                Severity Mix (new bugs in period)
+              </h3>
+              {severityTotal === 0 ? (
+                <p style={styles.emptyText}>No bugs logged in this period.</p>
+              ) : (
+                SEVERITY_ORDER.map(key => (
+                  <DistributionBar
+                    key={key}
+                    label={key}
+                    count={reportData.severity_breakdown[key] || 0}
+                    total={severityTotal}
+                    color={SEVERITY_COLORS[key]}
+                  />
+                ))
+              )}
+            </div>
+            <div className="glass-panel" style={styles.sectionPanel}>
+              <h3 style={styles.panelTitle}>
+                <BarChart3 size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
+                Current Backlog by Status
+              </h3>
+              <p style={styles.snapshotNote}>Live snapshot — not limited to the selected date range.</p>
+              {statusTotal === 0 ? (
+                <p style={styles.emptyText}>No bugs in scope.</p>
+              ) : (
+                STATUS_ORDER.map(key => (
+                  <DistributionBar
+                    key={key}
+                    label={key}
+                    count={reportData.status_breakdown[key] || 0}
+                    total={statusTotal}
+                    color="var(--primary-neon)"
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Release Readiness */}
+          <div className="glass-panel" style={styles.sectionPanel}>
+            <h3 style={styles.panelTitle}>
+              <GitBranch size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
+              Release Readiness
+            </h3>
+            <p style={styles.snapshotNote}>Live snapshot per version — not limited to the selected date range.</p>
+            {reportData.version_readiness.length === 0 ? (
+              <p style={styles.emptyText}>No versions found in scope.</p>
+            ) : (
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Version</th>
+                    {showProjectColumn && <th style={styles.th}>Project</th>}
+                    <th style={styles.th}>Status</th>
+                    <th style={styles.th}>Release Date</th>
+                    <th style={styles.th}>Open</th>
+                    <th style={styles.th}>Blockers</th>
+                    <th style={styles.th}>Resolved</th>
+                    <th style={styles.th}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reportData.version_readiness.map(v => (
+                    <tr key={v.version_id} style={v.blocker_bugs > 0 ? styles.blockerRow : styles.tr}>
+                      <td style={{ ...styles.td, fontWeight: '700', color: 'var(--text-strong)' }}>{v.version_name}</td>
+                      {showProjectColumn && <td style={styles.td}>{v.project_name}</td>}
+                      <td style={styles.td}>
+                        <span style={{
+                          ...styles.versionStatusBadge,
+                          color: VERSION_STATUS_COLOR[v.status] || 'var(--text-muted)',
+                          borderColor: VERSION_STATUS_COLOR[v.status] || 'var(--glass-border)',
+                        }}>
+                          {v.status}
+                        </span>
+                      </td>
+                      <td style={styles.td}>{v.release_date ? new Date(v.release_date).toLocaleDateString() : '—'}</td>
+                      <td style={styles.td}>{v.open_bugs}</td>
+                      <td style={{ ...styles.td, color: v.blocker_bugs > 0 ? 'var(--accent-rust)' : 'var(--text-muted)', fontWeight: v.blocker_bugs > 0 ? '700' : '400' }}>
+                        {v.blocker_bugs}
+                      </td>
+                      <td style={styles.td}>{v.resolved_bugs}</td>
+                      <td style={styles.td}>{v.total_bugs}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Team Workload */}
+          <div className="glass-panel" style={styles.sectionPanel}>
+            <h3 style={styles.panelTitle}>
+              <Users size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
+              Team Workload
+            </h3>
+            {reportData.team_workload.length === 0 ? (
+              <p style={styles.emptyText}>No bugs are currently assigned in scope.</p>
+            ) : (
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Member</th>
+                    <th style={styles.th}>Currently Assigned</th>
+                    <th style={styles.th}>Resolved in Period</th>
+                    <th style={styles.th}>Avg Resolution</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reportData.team_workload.map(w => (
+                    <tr key={w.user_id} style={styles.tr}>
+                      <td style={{ ...styles.td, fontWeight: '700', color: 'var(--text-strong)' }}>{w.full_name}</td>
+                      <td style={styles.td}>{w.open_assigned}</td>
+                      <td style={styles.td}>{w.resolved_in_period}</td>
+                      <td style={styles.td}>{w.avg_resolution_hours != null ? `${w.avg_resolution_hours} hrs` : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Activity Timeline */}
           <div className="glass-panel" style={styles.sectionPanel}>
             <h3 style={styles.panelTitle}>
               <RefreshCw size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
-              Project Transitions Pipeline
+              Activity Timeline
             </h3>
-            {reportData.movements.length === 0 ? (
-              <p style={styles.emptyText}>No project status movements recorded during this period.</p>
+            {reportData.activity_timeline_truncated && (
+              <p style={styles.snapshotNote}>
+                Showing the latest 200 entries — export the Activity Timeline CSV for the complete list.
+              </p>
+            )}
+            {reportData.activity_timeline.length === 0 ? (
+              <p style={styles.emptyText}>No activity recorded during this period.</p>
             ) : (
               <div style={styles.movementsList}>
-                {reportData.movements.map((m, idx) => (
-                  <div key={idx} style={styles.movementItem}>
-                    <div style={styles.moveProjName}>
-                      <strong>{m.project_name}</strong>
-                    </div>
-                    <div style={styles.moveAction}>
-                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.from_status.toLowerCase()})`, borderColor: `var(--status-${m.from_status.toLowerCase()})` }}>
-                        {m.from_status}
-                      </span>
-                      <ArrowRight size={14} color="var(--text-subtle)" />
-                      <span style={{ ...styles.moveStatusBadge, color: `var(--status-${m.to_status.toLowerCase()})`, borderColor: `var(--status-${m.to_status.toLowerCase()})` }}>
-                        {m.to_status}
-                      </span>
-                    </div>
-                    <div style={styles.moveMeta}>
-                      <span>by {m.user_name}</span>
+                {reportData.activity_timeline.map(log => {
+                  const Icon = ACTIVITY_ICONS[log.activity_type] || RefreshCw;
+                  const isTransition = log.activity_type === 'project_status_change' || log.activity_type === 'bug_status_change' || log.activity_type === 'bug_resolved';
+                  return (
+                    <div key={log.id} style={styles.timelineItem}>
+                      <Icon size={16} color="var(--primary-neon)" style={{ flexShrink: 0 }} />
+                      <div style={styles.timelineBody}>
+                        <span>{describeActivity(log)}</span>
+                        {isTransition && log.old_value && log.new_value && (
+                          <span style={styles.timelineTransition}>
+                            <span style={styles.moveStatusBadge}>{log.old_value}</span>
+                            <ArrowRight size={12} color="var(--text-subtle)" />
+                            <span style={styles.moveStatusBadge}>{log.new_value}</span>
+                          </span>
+                        )}
+                      </div>
                       <span style={styles.moveDate}>
-                        {new Date(m.changed_at).toLocaleDateString([], { dateStyle: 'short' })}
+                        {new Date(log.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
                       </span>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -352,6 +581,26 @@ const styles = {
     gap: '12px',
     flexWrap: 'wrap',
   },
+  projectSelect: {
+    padding: '8px 12px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
+    outline: 'none',
+    fontSize: '14px',
+  },
+  exportSelect: {
+    padding: '8px 12px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
+    outline: 'none',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+  },
   datePickerGroup: {
     display: 'flex',
     alignItems: 'center',
@@ -438,6 +687,51 @@ const styles = {
     fontSize: '11px',
     color: 'var(--text-subtle)',
   },
+  distGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: '16px',
+  },
+  distRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    marginBottom: '10px',
+  },
+  distLabel: {
+    width: '90px',
+    flexShrink: 0,
+    fontSize: '13px',
+    color: 'var(--text-muted)',
+    fontWeight: '600',
+  },
+  distTrack: {
+    flex: 1,
+    height: '10px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    overflow: 'hidden',
+  },
+  distFill: {
+    height: '100%',
+    transition: 'width 0.3s ease',
+  },
+  distCount: {
+    width: '28px',
+    flexShrink: 0,
+    textAlign: 'right',
+    fontSize: '13px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+  },
+  snapshotNote: {
+    fontSize: '12px',
+    color: 'var(--text-subtle)',
+    marginTop: '-10px',
+    marginBottom: '16px',
+    fontStyle: 'italic',
+  },
   sectionPanel: {
     padding: '24px',
   },
@@ -461,46 +755,47 @@ const styles = {
   movementsList: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
+    gap: '10px',
   },
-  movementItem: {
+  timelineItem: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '12px 16px',
+    gap: '12px',
+    padding: '10px 14px',
     background: 'var(--bg-tertiary)',
     border: '2px solid var(--glass-border)',
     borderRadius: 'var(--border-radius-sm)',
-    flexWrap: 'wrap',
-    gap: '12px',
   },
-  moveProjName: {
-    flex: '1 1 200px',
-  },
-  moveAction: {
+  timelineBody: {
+    flex: 1,
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
-    flex: '1 1 200px',
+    gap: '10px',
+    flexWrap: 'wrap',
+    fontSize: '13px',
+    color: 'var(--text-main)',
+  },
+  timelineTransition: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
   },
   moveStatusBadge: {
-    fontSize: '12px',
+    fontSize: '11px',
     fontWeight: '700',
-    padding: '3px 10px',
+    padding: '2px 8px',
     borderRadius: 'var(--border-radius-sm)',
     borderWidth: '2px',
     borderStyle: 'solid',
+    borderColor: 'var(--glass-border)',
     background: 'var(--bg-elevated)',
-  },
-  moveMeta: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    fontSize: '13px',
     color: 'var(--text-muted)',
   },
   moveDate: {
+    fontSize: '12px',
     color: 'var(--text-subtle)',
+    flexShrink: 0,
+    whiteSpace: 'nowrap',
   },
   table: {
     width: '100%',
@@ -517,9 +812,22 @@ const styles = {
   tr: {
     borderBottom: '2px solid var(--glass-border)',
   },
+  blockerRow: {
+    borderBottom: '2px solid var(--glass-border)',
+    background: 'var(--danger-bg)',
+  },
   td: {
     padding: '12px',
     color: 'var(--text-muted)',
+  },
+  versionStatusBadge: {
+    fontSize: '11px',
+    fontWeight: '700',
+    padding: '2px 8px',
+    borderRadius: 'var(--border-radius-sm)',
+    borderWidth: '2px',
+    borderStyle: 'solid',
+    background: 'var(--bg-elevated)',
   },
   blockSev: {
     fontSize: '10px',

@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 import os
 
 from backend.database import engine, Base, get_db, SessionLocal
-from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument
+from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument, PasswordResetRequest
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
+    PasswordResetRequestCreate, PasswordResetRequestOut, PasswordResetResolve,
     ASSIGNABLE_ROLES,
     ProjectCreate, ProjectOut, ProjectUpdate,
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
@@ -32,7 +33,8 @@ from backend.auth import (
     get_current_user, get_current_admin, require_roles
 )
 from backend.reporter import (
-    calculate_qa_metrics, generate_csv_bugs_report, generate_csv_projects_report
+    calculate_qa_metrics, generate_csv_bugs_report, generate_csv_projects_report,
+    generate_csv_version_readiness, generate_csv_team_workload, generate_csv_activity_timeline
 )
 from backend.storage import get_storage_backend
 
@@ -112,6 +114,8 @@ allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    # Also allow access from other devices on the same private network (dev only).
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -231,12 +235,70 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+@app.post("/api/auth/forgot-password")
+def forgot_password(request_in: PasswordResetRequestCreate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request_in.email.lower()).first()
+    # Always return a generic response so this endpoint can't be used to
+    # enumerate which emails have accounts.
+    generic_response = {
+        "message": "If an account exists for this email, an admin has been notified and will be in touch to reset your password."
+    }
+    if not user:
+        return generic_response
+
+    existing_pending = db.query(PasswordResetRequest).filter(
+        PasswordResetRequest.user_id == user.id,
+        PasswordResetRequest.status == "Pending"
+    ).first()
+    if not existing_pending:
+        db.add(PasswordResetRequest(user_id=user.id))
+        db.commit()
+
+    return generic_response
+
 
 # ==================== ADMIN ENDPOINTS ====================
 
 @app.get("/api/admin/users/pending", response_model=List[UserOut])
 def get_pending_users(admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
     return db.query(User).filter(User.role == "Pending").all()
+
+@app.get("/api/admin/password-resets/pending", response_model=List[PasswordResetRequestOut])
+def get_pending_password_resets(admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    return db.query(PasswordResetRequest).filter(PasswordResetRequest.status == "Pending").order_by(PasswordResetRequest.created_at).all()
+
+@app.post("/api/admin/password-resets/{request_id}/resolve", response_model=PasswordResetRequestOut)
+def resolve_password_reset(request_id: int, resolution: PasswordResetResolve, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    reset_request = db.query(PasswordResetRequest).filter(PasswordResetRequest.id == request_id).first()
+    if not reset_request:
+        raise HTTPException(status_code=404, detail="Password reset request not found")
+    if reset_request.status != "Pending":
+        raise HTTPException(status_code=400, detail="This request has already been handled")
+    if len(resolution.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    reset_request.user.hashed_password = get_password_hash(resolution.new_password)
+    reset_request.status = "Resolved"
+    reset_request.resolved_at = datetime.datetime.utcnow()
+    reset_request.resolved_by_id = admin.id
+    db.commit()
+    db.refresh(reset_request)
+    return reset_request
+
+@app.post("/api/admin/password-resets/{request_id}/dismiss", response_model=PasswordResetRequestOut)
+def dismiss_password_reset(request_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    reset_request = db.query(PasswordResetRequest).filter(PasswordResetRequest.id == request_id).first()
+    if not reset_request:
+        raise HTTPException(status_code=404, detail="Password reset request not found")
+    if reset_request.status != "Pending":
+        raise HTTPException(status_code=400, detail="This request has already been handled")
+
+    reset_request.status = "Dismissed"
+    reset_request.resolved_at = datetime.datetime.utcnow()
+    reset_request.resolved_by_id = admin.id
+    db.commit()
+    db.refresh(reset_request)
+    return reset_request
 
 @app.post("/api/admin/users/{user_id}/approve", response_model=UserOut)
 def approve_user(user_id: int, approval: UserApprove, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
@@ -729,39 +791,44 @@ def list_comments(project_id: Optional[int] = None, bug_id: Optional[int] = None
 
 # ==================== REPORTING ENDPOINTS ====================
 
-@app.get("/api/reports", response_model=ReportDataOut)
-def get_report(
-    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+def parse_report_range(start_date: str, end_date: str):
     try:
         start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
         # Include the full end day
         end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
+        return start, end
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    metrics = calculate_qa_metrics(db, start, end)
+@app.get("/api/reports", response_model=ReportDataOut)
+def get_report(
+    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    project_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    start, end = parse_report_range(start_date, end_date)
+    if project_id is not None:
+        require_project(db, project_id)
+
+    metrics = calculate_qa_metrics(db, start, end, project_id)
     return metrics
 
 @app.get("/api/reports/export/bugs")
 def export_bugs(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    project_id: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    try:
-        start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    start, end = parse_report_range(start_date, end_date)
+    if project_id is not None:
+        require_project(db, project_id)
 
-    csv_data = generate_csv_bugs_report(db, start, end)
-    
-    # Return as download stream
+    csv_data = generate_csv_bugs_report(db, start, end, project_id)
+
     response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
     response.headers["Content-Disposition"] = f"attachment; filename=qa_bugs_report_{start_date}_to_{end_date}.csv"
     return response
@@ -770,20 +837,69 @@ def export_bugs(
 def export_projects(
     start_date: str = Query(..., description="Format: YYYY-MM-DD"),
     end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    project_id: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    try:
-        start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.datetime.strptime(end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    start, end = parse_report_range(start_date, end_date)
+    if project_id is not None:
+        require_project(db, project_id)
 
-    csv_data = generate_csv_projects_report(db, start, end)
-    
-    # Return as download stream
+    csv_data = generate_csv_projects_report(db, start, end, project_id)
+
     response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
     response.headers["Content-Disposition"] = f"attachment; filename=qa_projects_movement_{start_date}_to_{end_date}.csv"
+    return response
+
+@app.get("/api/reports/export/versions")
+def export_versions(
+    project_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if project_id is not None:
+        require_project(db, project_id)
+
+    csv_data = generate_csv_version_readiness(db, project_id)
+
+    response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
+    response.headers["Content-Disposition"] = "attachment; filename=qa_version_readiness.csv"
+    return response
+
+@app.get("/api/reports/export/workload")
+def export_workload(
+    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    project_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    start, end = parse_report_range(start_date, end_date)
+    if project_id is not None:
+        require_project(db, project_id)
+
+    csv_data = generate_csv_team_workload(db, start, end, project_id)
+
+    response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
+    response.headers["Content-Disposition"] = f"attachment; filename=qa_team_workload_{start_date}_to_{end_date}.csv"
+    return response
+
+@app.get("/api/reports/export/activity")
+def export_activity(
+    start_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    end_date: str = Query(..., description="Format: YYYY-MM-DD"),
+    project_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    start, end = parse_report_range(start_date, end_date)
+    if project_id is not None:
+        require_project(db, project_id)
+
+    csv_data = generate_csv_activity_timeline(db, start, end, project_id)
+
+    response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
+    response.headers["Content-Disposition"] = f"attachment; filename=qa_activity_timeline_{start_date}_to_{end_date}.csv"
     return response
 
 

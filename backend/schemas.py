@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 ASSIGNABLE_ROLES = ["Admin", "PM", "Dev", "QA", "Guest"]
@@ -28,11 +28,29 @@ class UserUpdate(BaseModel):
 class UserApprove(BaseModel):
     role: str = "QA"
 
+# Password Reset Schemas
+class PasswordResetRequestCreate(BaseModel):
+    email: EmailStr
+
+class PasswordResetResolve(BaseModel):
+    new_password: str
+
 class UserOut(UserBase):
     id: int
     role: str
     is_active: bool
     created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+class PasswordResetRequestOut(BaseModel):
+    id: int
+    status: str
+    user: UserOut
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True
@@ -214,19 +232,37 @@ class BugReportMetric(BaseModel):
     blocker_bugs: int
     mttr_hours: float
 
-class ProjectMovementMetric(BaseModel):
+class VersionReadinessOut(BaseModel):
+    version_id: int
+    version_name: str
     project_id: int
     project_name: str
-    from_status: str
-    to_status: str
-    user_name: str
-    changed_at: datetime
+    status: str
+    release_date: Optional[datetime] = None
+    open_bugs: int
+    blocker_bugs: int
+    resolved_bugs: int
+    total_bugs: int
+
+class OwnerWorkloadOut(BaseModel):
+    user_id: int
+    full_name: str
+    open_assigned: int
+    resolved_in_period: int
+    avg_resolution_hours: Optional[float] = None
 
 class ReportDataOut(BaseModel):
     start_date: datetime
     end_date: datetime
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
     summary_paragraph: str
     bug_metrics: BugReportMetric
-    movements: List[ProjectMovementMetric]
+    severity_breakdown: Dict[str, int]
+    status_breakdown: Dict[str, int]
+    version_readiness: List[VersionReadinessOut]
+    team_workload: List[OwnerWorkloadOut]
+    activity_timeline: List[ActivityLogOut]
+    activity_timeline_truncated: bool
     comments: List[CommentOut]
     blockers_encountered: List[BugOut]

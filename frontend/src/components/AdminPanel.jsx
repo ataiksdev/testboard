@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { Shield, Check, X, AlertCircle, Users as UsersIcon, UserCog } from 'lucide-react';
+import { Shield, Check, X, AlertCircle, Users as UsersIcon, UserCog, KeyRound } from 'lucide-react';
 import { ROLES } from '../utils/roles';
 import { UserManagement } from './UserManagement';
 
@@ -8,12 +8,15 @@ export const AdminPanel = () => {
   const [activeTab, setActiveTab] = useState('pending');
   const [pendingUsers, setPendingUsers] = useState([]);
   const [approvalRoles, setApprovalRoles] = useState({});
+  const [pendingResets, setPendingResets] = useState([]);
+  const [resetInputs, setResetInputs] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const { token, API_URL } = useAuth();
 
   useEffect(() => {
     fetchPendingUsers();
+    fetchPendingResets();
   }, []);
 
   const fetchPendingUsers = async () => {
@@ -76,6 +79,70 @@ export const AdminPanel = () => {
     }
   };
 
+  const fetchPendingResets = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/admin/password-resets/pending`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!response.ok) throw new Error("Failed to fetch password reset requests");
+      const data = await response.json();
+      setPendingResets(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleResolveReset = async (requestId) => {
+    const newPassword = resetInputs[requestId] || '';
+    if (newPassword.length < 8) {
+      alert("New password must be at least 8 characters");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/api/admin/password-resets/${requestId}/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ new_password: newPassword })
+      });
+      if (response.ok) {
+        setPendingResets(pendingResets.filter(r => r.id !== requestId));
+        setResetInputs(inputs => {
+          const { [requestId]: _removed, ...rest } = inputs;
+          return rest;
+        });
+      } else {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to reset password");
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleDismissReset = async (requestId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/admin/password-resets/${requestId}/dismiss`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        setPendingResets(pendingResets.filter(r => r.id !== requestId));
+      } else {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to dismiss request");
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   return (
     <div style={styles.container} className="animate-fade-in">
       <div style={styles.header}>
@@ -97,6 +164,12 @@ export const AdminPanel = () => {
           onClick={() => setActiveTab('pending')}
         >
           <UsersIcon size={15} /> Pending Requests {pendingUsers.length > 0 && `(${pendingUsers.length})`}
+        </button>
+        <button
+          style={{ ...styles.tabBtn, ...(activeTab === 'resets' ? styles.tabBtnActive : {}) }}
+          onClick={() => setActiveTab('resets')}
+        >
+          <KeyRound size={15} /> Password Resets {pendingResets.length > 0 && `(${pendingResets.length})`}
         </button>
         <button
           style={{ ...styles.tabBtn, ...(activeTab === 'users' ? styles.tabBtnActive : {}) }}
@@ -163,6 +236,61 @@ export const AdminPanel = () => {
             )}
           </div>
         )
+      )}
+
+      {activeTab === 'resets' && (
+        <div className="glass-panel" style={styles.panel}>
+          <div style={styles.panelHeader}>
+            <KeyRound size={18} color="var(--text-muted)" />
+            <h3 style={styles.panelTitle}>Password Reset Requests ({pendingResets.length})</h3>
+          </div>
+
+          {pendingResets.length === 0 ? (
+            <div style={styles.emptyState}>
+              <Check size={36} color="var(--primary-neon)" style={{ marginBottom: '8px' }} />
+              <p style={{ color: 'var(--text-muted)' }}>No pending password reset requests.</p>
+            </div>
+          ) : (
+            <div style={styles.list}>
+              {pendingResets.map(reset => (
+                <div key={reset.id} style={styles.userRow} className="animate-slide-up">
+                  <div style={styles.userInfo}>
+                    <div style={styles.avatar}>{reset.user.full_name[0].toUpperCase()}</div>
+                    <div>
+                      <h4 style={styles.name}>{reset.user.full_name}</h4>
+                      <span style={styles.email}>{reset.user.email}</span>
+                    </div>
+                  </div>
+                  <div style={styles.actions}>
+                    <input
+                      type="text"
+                      placeholder="New password (min 8 chars)"
+                      value={resetInputs[reset.id] || ''}
+                      onChange={(e) => setResetInputs(inputs => ({ ...inputs, [reset.id]: e.target.value }))}
+                      style={styles.roleSelect}
+                    />
+                    <button
+                      onClick={() => handleResolveReset(reset.id)}
+                      className="btn-primary"
+                      style={styles.approveBtn}
+                    >
+                      <Check size={16} />
+                      Set Password
+                    </button>
+                    <button
+                      onClick={() => handleDismissReset(reset.id)}
+                      className="btn-danger"
+                      style={styles.rejectBtn}
+                    >
+                      <X size={16} />
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {activeTab === 'users' && <UserManagement />}
