@@ -29,6 +29,10 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [filterType, setFilterType] = useState('');
   const [filterOwnerId, setFilterOwnerId] = useState('');
 
+  // Drag and drop
+  const [draggedBugId, setDraggedBugId] = useState(null);
+  const [dragOverStatus, setDragOverStatus] = useState(null);
+
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -283,6 +287,12 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     }
   };
 
+  const handleBugDrop = (bugId, newStatus) => {
+    const bug = bugs.find(b => b.id === bugId);
+    if (!bug || bug.status === newStatus) return;
+    handleBugFieldUpdate(bugId, { status: newStatus });
+  };
+
   const handleOpenDetail = (bug) => {
     setActiveBug(bug);
     setShowDetailModal(true);
@@ -494,8 +504,30 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         <div style={styles.board}>
           {BUG_STATUSES.map(status => {
             const statusBugs = filteredBugs.filter(b => b.status === status);
+            const isDroppable = canEditFields && bugStatusOptions.includes(status);
             return (
-              <div key={status} style={styles.column} className="glass-panel">
+              <div
+                key={status}
+                style={{
+                  ...styles.column,
+                  ...(dragOverStatus === status ? styles.columnDragOver : {}),
+                }}
+                className="glass-panel"
+                onDragOver={(e) => {
+                  if (!isDroppable) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDragOverStatus(status);
+                }}
+                onDragLeave={() => setDragOverStatus(current => current === status ? null : current)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOverStatus(null);
+                  if (!isDroppable) return;
+                  const bugId = parseInt(e.dataTransfer.getData('text/plain'), 10) || draggedBugId;
+                  if (bugId) handleBugDrop(bugId, status);
+                }}
+              >
                 <div style={styles.columnHeader}>
                   <h3 style={styles.columnTitle}>{status}</h3>
                   <span style={styles.columnCount}>{statusBugs.length}</span>
@@ -505,7 +537,18 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   {statusBugs.map(bug => (
                     <div
                       key={bug.id}
-                      style={styles.card}
+                      style={{
+                        ...styles.card,
+                        ...(canEditFields ? styles.cardDraggable : {}),
+                        opacity: draggedBugId === bug.id ? 0.4 : 1,
+                      }}
+                      draggable={canEditFields}
+                      onDragStart={(e) => {
+                        setDraggedBugId(bug.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', String(bug.id));
+                      }}
+                      onDragEnd={() => { setDraggedBugId(null); setDragOverStatus(null); }}
                       onClick={() => handleOpenDetail(bug)}
                       className="animate-slide-up"
                     >
@@ -1072,6 +1115,11 @@ const styles = {
     minWidth: '200px',
     display: 'flex',
     flexDirection: 'column',
+    transition: 'border-color 0.15s ease, background 0.15s ease',
+  },
+  columnDragOver: {
+    borderColor: 'var(--primary-border)',
+    background: 'var(--primary-soft)',
   },
   columnHeader: {
     display: 'flex',
@@ -1122,6 +1170,9 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
+  },
+  cardDraggable: {
+    cursor: 'grab',
   },
   cardHeader: {
     display: 'flex',

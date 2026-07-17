@@ -21,6 +21,8 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [draggedProjectId, setDraggedProjectId] = useState(null);
+  const [dragOverStatus, setDragOverStatus] = useState(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [activeProject, setActiveProject] = useState(null);
   const [projectComments, setProjectComments] = useState([]);
@@ -181,6 +183,12 @@ export const ProjectTracker = ({ onSelectProject }) => {
     } catch (err) {
       alert(err.message);
     }
+  };
+
+  const handleProjectDrop = (projectId, newStatus) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project || project.status === newStatus) return;
+    handleStatusChange(projectId, newStatus);
   };
 
   const handleOpenDetail = async (project) => {
@@ -397,7 +405,28 @@ export const ProjectTracker = ({ onSelectProject }) => {
           {PROJECT_STATUSES.map(status => {
             const statusProjects = projects.filter(p => p.status === status);
             return (
-              <div key={status} style={styles.column} className="glass-panel">
+              <div
+                key={status}
+                style={{
+                  ...styles.column,
+                  ...(dragOverStatus === status ? styles.columnDragOver : {}),
+                }}
+                className="glass-panel"
+                onDragOver={(e) => {
+                  if (!canEdit) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDragOverStatus(status);
+                }}
+                onDragLeave={() => setDragOverStatus(current => current === status ? null : current)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOverStatus(null);
+                  if (!canEdit) return;
+                  const projectId = parseInt(e.dataTransfer.getData('text/plain'), 10) || draggedProjectId;
+                  if (projectId) handleProjectDrop(projectId, status);
+                }}
+              >
                 <div style={styles.columnHeader}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span style={{ ...styles.columnDot, background: `var(--status-${status.toLowerCase()})` }} />
@@ -410,9 +439,20 @@ export const ProjectTracker = ({ onSelectProject }) => {
                   {statusProjects.map(project => {
                     const stats = getProjectStats(project.id);
                     return (
-                      <div 
-                        key={project.id} 
-                        style={styles.card} 
+                      <div
+                        key={project.id}
+                        style={{
+                          ...styles.card,
+                          ...(canEdit ? styles.cardDraggable : {}),
+                          opacity: draggedProjectId === project.id ? 0.4 : 1,
+                        }}
+                        draggable={canEdit}
+                        onDragStart={(e) => {
+                          setDraggedProjectId(project.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', String(project.id));
+                        }}
+                        onDragEnd={() => { setDraggedProjectId(null); setDragOverStatus(null); }}
                         onClick={() => handleOpenDetail(project)}
                         className="animate-slide-up"
                       >
@@ -869,6 +909,11 @@ const styles = {
     minWidth: '220px',
     display: 'flex',
     flexDirection: 'column',
+    transition: 'border-color 0.15s ease, background 0.15s ease',
+  },
+  columnDragOver: {
+    borderColor: 'var(--primary-border)',
+    background: 'var(--primary-soft)',
   },
   columnHeader: {
     display: 'flex',
@@ -920,6 +965,9 @@ const styles = {
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     position: 'relative',
+  },
+  cardDraggable: {
+    cursor: 'grab',
   },
   cardHeader: {
     display: 'flex',
