@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   FolderKanban, Plus, MessageSquare, User as UserIcon,
-  ChevronRight, X, Users, UserPlus, FileText, Download, Trash2, Upload
+  ChevronRight, X, Users, UserPlus, FileText, Download, Trash2, Upload,
+  Pencil, GitBranch, Tag as TagIcon
 } from 'lucide-react';
 import { canManageProjects, canManageMembers } from '../utils/roles';
 
 const PROJECT_STATUSES = ["Intake", "Reviewing", "Testing", "Blocked", "Completed", "Archived"];
-const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Other"];
+const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Other"];
 
 const formatFileSize = (bytes) => {
   if (!bytes) return '';
@@ -34,20 +35,42 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [docType, setDocType] = useState('BRD');
   const [docFile, setDocFile] = useState(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [projectVersions, setProjectVersions] = useState([]);
 
-  // Form fields
+  // Create-project form fields
   const [projName, setProjName] = useState('');
   const [projKey, setProjKey] = useState('');
   const [projDesc, setProjDesc] = useState('');
   const [projStatus, setProjStatus] = useState('Intake');
   const [projLead, setProjLead] = useState('');
-  const [selectedProjectId, setSelectedProjectId] = useState('new');
-  const [versionName, setVersionName] = useState('');
-  const [componentName, setComponentName] = useState('');
+  const [projVendor, setProjVendor] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  // Staged documents to upload right after project creation
+  const [stagedDocs, setStagedDocs] = useState([]);
+  const [newDocFile, setNewDocFile] = useState(null);
+  const [newDocTitle, setNewDocTitle] = useState('');
+  const [newDocType, setNewDocType] = useState('BRD');
+
+  // Add-version form (used from within the project detail modal)
+  const [newVersionName, setNewVersionName] = useState('');
+  const [newVersionComponent, setNewVersionComponent] = useState('');
+  const [newVersionChangelogFile, setNewVersionChangelogFile] = useState(null);
+  const [addingVersion, setAddingVersion] = useState(false);
+
+  // Project edit mode (within detail modal)
+  const [editMode, setEditMode] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editKey, setEditKey] = useState('');
+  const [editVendor, setEditVendor] = useState('');
+  const [editLeadId, setEditLeadId] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const { token, API_URL, user } = useAuth();
   const canEdit = canManageProjects(user.role);
   const canEditMembers = canManageMembers(user.role);
+  const qaLeadOptions = users.filter(u => u.role === 'QA');
 
   useEffect(() => {
     fetchData();
@@ -75,9 +98,10 @@ export const ProjectTracker = ({ onSelectProject }) => {
       setProjects(projData);
       setBugs(bugData);
       setUsers(userData);
-      
-      if (userData.length > 0) {
-        setProjLead(userData[0].id);
+
+      const qaUsers = userData.filter(u => u.role === 'QA');
+      if (qaUsers.length > 0) {
+        setProjLead(qaUsers[0].id);
       }
     } catch (err) {
       console.error(err);
@@ -87,97 +111,91 @@ export const ProjectTracker = ({ onSelectProject }) => {
   };
 
   const resetProjectForm = () => {
-    setSelectedProjectId('new');
     setProjName('');
     setProjKey('');
     setProjDesc('');
     setProjStatus('Intake');
-    setVersionName('');
-    setComponentName('');
-    if (users.length > 0) {
-      setProjLead(users[0].id);
+    setProjVendor('');
+    setStagedDocs([]);
+    setNewDocFile(null);
+    setNewDocTitle('');
+    setNewDocType('BRD');
+    const qaUsers = users.filter(u => u.role === 'QA');
+    if (qaUsers.length > 0) {
+      setProjLead(qaUsers[0].id);
     }
   };
 
-  const createProjectVersion = async (projectId) => {
-    const response = await fetch(`${API_URL}/api/projects/${projectId}/versions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        version_name: versionName.trim(),
-        status: 'Planning'
-      })
-    });
-
-    if (!response.ok) {
-      const data = await response.json();
-      throw new Error(data.detail || "Failed to add project version");
-    }
+  const stageDocument = () => {
+    if (!newDocFile || !newDocTitle.trim()) return;
+    setStagedDocs(prev => [...prev, { file: newDocFile, title: newDocTitle.trim(), docType: newDocType }]);
+    setNewDocFile(null);
+    setNewDocTitle('');
+    setNewDocType('BRD');
   };
 
-  const createProjectComponent = async (projectId) => {
-    if (!componentName.trim()) return;
-    const response = await fetch(`${API_URL}/api/projects/${projectId}/components`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ name: componentName.trim() })
-    });
+  const removeStagedDocument = (index) => {
+    setStagedDocs(prev => prev.filter((_, i) => i !== index));
+  };
 
+  const uploadDocumentToProject = async (projectId, { file, title, docType, versionId }) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('doc_type', docType);
+    if (versionId) formData.append('version_id', versionId);
+    formData.append('file', file);
+
+    const response = await fetch(`${API_URL}/api/projects/${projectId}/documents`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData
+    });
     if (!response.ok) {
       const data = await response.json();
-      throw new Error(data.detail || "Failed to add component");
+      throw new Error(data.detail || "Failed to upload document");
     }
+    return response.json();
   };
 
   const handleCreateProject = async (e) => {
     e.preventDefault();
     try {
-      if (!versionName.trim()) {
-        throw new Error("Version number is required");
+      setCreatingProject(true);
+      const response = await fetch(`${API_URL}/api/projects`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: projName,
+          key: projKey.toUpperCase(),
+          description: projDesc,
+          status: projStatus,
+          vendor: projVendor.trim() || null,
+          lead_id: projLead ? parseInt(projLead) : undefined
+        })
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to create project");
       }
 
-      let projectId = selectedProjectId;
+      const project = await response.json();
 
-      if (selectedProjectId === 'new') {
-        const response = await fetch(`${API_URL}/api/projects`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            name: projName,
-            key: projKey.toUpperCase(),
-            description: projDesc,
-            status: projStatus,
-            lead_id: parseInt(projLead)
-          })
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.detail || "Failed to create project");
-        }
-
-        const project = await response.json();
-        projectId = project.id;
+      for (const doc of stagedDocs) {
+        await uploadDocumentToProject(project.id, doc);
       }
-
-      await createProjectVersion(projectId);
-      await createProjectComponent(projectId);
 
       setShowCreateModal(false);
       resetProjectForm();
-      
+
       fetchData();
     } catch (err) {
       alert(err.message);
+    } finally {
+      setCreatingProject(false);
     }
   };
 
@@ -218,9 +236,120 @@ export const ProjectTracker = ({ onSelectProject }) => {
     setDocTitle('');
     setDocType('BRD');
     setDocFile(null);
+    setEditMode(false);
+    setNewVersionName('');
+    setNewVersionComponent('');
+    setNewVersionChangelogFile(null);
     fetchProjectComments(project.id);
     fetchProjectMembers(project.id);
     fetchProjectDocuments(project.id);
+    fetchProjectVersions(project.id);
+  };
+
+  const fetchProjectVersions = async (projectId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${projectId}/versions`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        setProjectVersions(await response.json());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddVersion = async (e) => {
+    e.preventDefault();
+    if (!newVersionName.trim()) return;
+    try {
+      setAddingVersion(true);
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/versions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ version_name: newVersionName.trim(), status: 'Planning' })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to add version");
+      }
+      const version = await response.json();
+
+      if (newVersionComponent.trim()) {
+        await fetch(`${API_URL}/api/projects/${activeProject.id}/components`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ name: newVersionComponent.trim() })
+        });
+      }
+
+      if (newVersionChangelogFile) {
+        await uploadDocumentToProject(activeProject.id, {
+          file: newVersionChangelogFile,
+          title: `${newVersionName.trim()} Changelog`,
+          docType: 'Changelog',
+          versionId: version.id
+        });
+      }
+
+      setNewVersionName('');
+      setNewVersionComponent('');
+      setNewVersionChangelogFile(null);
+      fetchProjectVersions(activeProject.id);
+      fetchProjectDocuments(activeProject.id);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setAddingVersion(false);
+    }
+  };
+
+  const handleStartEdit = () => {
+    setEditName(activeProject.name);
+    setEditKey(activeProject.key);
+    setEditVendor(activeProject.vendor || '');
+    setEditLeadId(activeProject.lead_id || '');
+    setEditDescription(activeProject.description || '');
+    setEditMode(true);
+  };
+
+  const handleSaveProjectEdit = async (e) => {
+    e.preventDefault();
+    try {
+      setSavingEdit(true);
+      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: editName,
+          key: editKey.toUpperCase(),
+          vendor: editVendor.trim(),
+          lead_id: editLeadId ? parseInt(editLeadId) : undefined,
+          description: editDescription
+        })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to update project");
+      }
+      const updated = await response.json();
+      setActiveProject(updated);
+      setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+      setEditMode(false);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const getFileUrl = (fileUrl) => {
@@ -536,121 +665,135 @@ export const ProjectTracker = ({ onSelectProject }) => {
               </button>
             </div>
             <form onSubmit={handleCreateProject} style={styles.modalForm}>
-              {projects.length > 0 && (
-                <div style={styles.inputGroup}>
-                  <label style={styles.modalLabel}>Project</label>
-                  <select
-                    value={selectedProjectId}
-                    onChange={(e) => setSelectedProjectId(e.target.value)}
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Project Name</label>
+                <input
+                  type="text"
+                  value={projName}
+                  onChange={(e) => setProjName(e.target.value)}
+                  placeholder="e.g. Mobile E-commerce Redesign"
+                  required
+                  autoFocus
+                  style={styles.modalInput}
+                />
+              </div>
+
+              <div style={styles.row}>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Project Key (e.g. MOB)</label>
+                  <input
+                    type="text"
+                    value={projKey}
+                    onChange={(e) => setProjKey(e.target.value)}
+                    maxLength={5}
+                    placeholder="e.g. SHOP"
                     required
+                    style={styles.modalInput}
+                  />
+                </div>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Initial Status</label>
+                  <select
+                    value={projStatus}
+                    onChange={(e) => setProjStatus(e.target.value)}
                     style={styles.modalSelect}
                   >
-                    <option value="new">Create new project</option>
-                    {projects.map(project => (
-                      <option key={project.id} value={project.id}>
-                        {project.name} ({project.key})
-                      </option>
-                    ))}
+                    {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
-              )}
+              </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Version Number</label>
+                <label style={styles.modalLabel}>Vendor/Developer (optional)</label>
                 <input
                   type="text"
-                  value={versionName}
-                  onChange={(e) => setVersionName(e.target.value)}
-                  placeholder="e.g. v1.0, 2026.06, build 42"
-                  required
+                  value={projVendor}
+                  onChange={(e) => setProjVendor(e.target.value)}
+                  placeholder="e.g. Acme Software Inc."
                   style={styles.modalInput}
                 />
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Component (optional)</label>
-                <input
-                  type="text"
-                  value={componentName}
-                  onChange={(e) => setComponentName(e.target.value)}
-                  placeholder="e.g. Checkout, Auth"
-                  style={styles.modalInput}
+                <label style={styles.modalLabel}>QA Lead</label>
+                <select
+                  value={projLead}
+                  onChange={(e) => setProjLead(e.target.value)}
+                  style={styles.modalSelect}
+                >
+                  <option value="">Unassigned</option>
+                  {qaLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                </select>
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Description</label>
+                <textarea
+                  value={projDesc}
+                  onChange={(e) => setProjDesc(e.target.value)}
+                  placeholder="Project goals, QA scope, and testing pipelines..."
+                  rows={4}
+                  style={styles.modalTextarea}
                 />
               </div>
 
-              {selectedProjectId === 'new' && (
-                <>
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>Project Name</label>
-                    <input 
-                      type="text" 
-                      value={projName} 
-                      onChange={(e) => setProjName(e.target.value)}
-                      placeholder="e.g. Mobile E-commerce Redesign"
-                      required
-                      style={styles.modalInput}
-                    />
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Project Documents (optional)</label>
+                {stagedDocs.length > 0 && (
+                  <div style={styles.teamList}>
+                    {stagedDocs.map((doc, i) => (
+                      <div key={i} style={styles.docRow}>
+                        <span style={styles.docTypeBadge}>{doc.docType}</span>
+                        <div style={styles.docInfo}>
+                          <span style={styles.teamName}>{doc.title}</span>
+                          <span style={styles.docMeta}>{doc.file.name}</span>
+                        </div>
+                        <button type="button" style={styles.teamRemoveBtn} onClick={() => removeStagedDocument(i)} title="Remove">
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
-
-                  <div style={styles.row}>
-                    <div style={{ ...styles.inputGroup, flex: 1 }}>
-                      <label style={styles.modalLabel}>Project Key (e.g. MOB)</label>
-                      <input 
-                        type="text" 
-                        value={projKey} 
-                        onChange={(e) => setProjKey(e.target.value)}
-                        maxLength={5}
-                        placeholder="e.g. SHOP"
-                        required
-                        style={styles.modalInput}
-                      />
-                    </div>
-                    <div style={{ ...styles.inputGroup, flex: 1 }}>
-                      <label style={styles.modalLabel}>Initial Status</label>
-                      <select 
-                        value={projStatus} 
-                        onChange={(e) => setProjStatus(e.target.value)}
-                        style={styles.modalSelect}
-                      >
-                        {PROJECT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>QA Lead</label>
-                    <select 
-                      value={projLead} 
-                      onChange={(e) => setProjLead(e.target.value)}
-                      style={styles.modalSelect}
-                    >
-                      {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                    </select>
-                  </div>
-
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>Description</label>
-                    <textarea 
-                      value={projDesc} 
-                      onChange={(e) => setProjDesc(e.target.value)}
-                      placeholder="Project goals, QA scope, and testing pipelines..."
-                      rows={4}
-                      style={styles.modalTextarea}
-                    />
-                  </div>
-                </>
-              )}
-
-              {selectedProjectId !== 'new' && (
-                <div style={styles.existingProjectNote}>
-                  A new version will be added to the selected project.
+                )}
+                <div style={styles.row}>
+                  <input
+                    type="text"
+                    value={newDocTitle}
+                    onChange={(e) => setNewDocTitle(e.target.value)}
+                    placeholder="Document title, e.g. BRD v1"
+                    style={{ ...styles.modalInput, flex: 2 }}
+                  />
+                  <select
+                    value={newDocType}
+                    onChange={(e) => setNewDocType(e.target.value)}
+                    style={{ ...styles.modalSelect, flex: 1 }}
+                  >
+                    {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
                 </div>
-              )}
+                <div style={styles.row}>
+                  <input
+                    type="file"
+                    onChange={(e) => setNewDocFile(e.target.files?.[0] || null)}
+                    style={styles.docFileInput}
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={styles.addMemberBtn}
+                    disabled={!newDocFile || !newDocTitle.trim()}
+                    onClick={stageDocument}
+                  >
+                    <Upload size={14} /> Add
+                  </button>
+                </div>
+              </div>
 
               <div style={styles.modalActions}>
                 <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)} style={{ padding: '10px 20px' }}>Cancel</button>
-                <button type="submit" className="btn-primary" style={{ padding: '10px 20px' }}>
-                  {selectedProjectId === 'new' ? 'Create Project' : 'Add Version'}
+                <button type="submit" className="btn-primary" style={{ padding: '10px 20px' }} disabled={creatingProject}>
+                  {creatingProject ? 'Creating...' : 'Create Project'}
                 </button>
               </div>
             </form>
@@ -667,44 +810,121 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 <span style={styles.modalSubheading}>Project Details • {activeProject.key}</span>
                 <h3 style={styles.modalTitle}>{activeProject.name}</h3>
               </div>
-              <button style={styles.closeBtn} onClick={() => setShowDetailModal(false)}>
-                <X size={20} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {canEdit && !editMode && (
+                  <button style={styles.watchBtn} onClick={handleStartEdit} title="Edit project">
+                    <Pencil size={14} /> Edit
+                  </button>
+                )}
+                <button style={styles.closeBtn} onClick={() => setShowDetailModal(false)}>
+                  <X size={20} />
+                </button>
+              </div>
             </div>
-            
-            <div style={styles.modalBody}>
-              {/* Status Tracker Control */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>QA status</h4>
-                <div style={styles.statusButtonsGroup}>
-                  {PROJECT_STATUSES.map(s => (
-                    <button
-                      key={s}
-                      disabled={!canEdit}
-                      onClick={() => canEdit && handleStatusChange(activeProject.id, s)}
-                      style={{
-                        ...styles.statusSelectorBtn,
-                        borderColor: activeProject.status === s ? `var(--status-${s.toLowerCase()})` : 'var(--glass-border)',
-                        background: activeProject.status === s ? 'var(--surface-hover)' : 'transparent',
-                        color: activeProject.status === s ? 'var(--text-strong)' : 'var(--text-muted)',
-                        cursor: canEdit ? 'pointer' : 'default',
-                        opacity: canEdit ? 1 : 0.7,
-                      }}
-                    >
-                      <span style={{
-                        ...styles.statusDot, 
-                        background: `var(--status-${s.toLowerCase()})`
-                      }} />
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
 
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>QA Project Scope</h4>
-                <p style={styles.detailDescText}>{activeProject.description || "No description provided."}</p>
-              </div>
+            <div style={styles.modalBody}>
+              {editMode ? (
+                <form onSubmit={handleSaveProjectEdit} style={styles.modalForm}>
+                  <div style={styles.inputGroup}>
+                    <label style={styles.modalLabel}>Project Name</label>
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      required
+                      style={styles.modalInput}
+                    />
+                  </div>
+                  <div style={styles.row}>
+                    <div style={{ ...styles.inputGroup, flex: 1 }}>
+                      <label style={styles.modalLabel}>Project Key</label>
+                      <input
+                        type="text"
+                        value={editKey}
+                        onChange={(e) => setEditKey(e.target.value)}
+                        maxLength={5}
+                        required
+                        style={styles.modalInput}
+                      />
+                    </div>
+                    <div style={{ ...styles.inputGroup, flex: 1 }}>
+                      <label style={styles.modalLabel}>Vendor/Developer</label>
+                      <input
+                        type="text"
+                        value={editVendor}
+                        onChange={(e) => setEditVendor(e.target.value)}
+                        placeholder="e.g. Acme Software Inc."
+                        style={styles.modalInput}
+                      />
+                    </div>
+                  </div>
+                  <div style={styles.inputGroup}>
+                    <label style={styles.modalLabel}>QA Lead</label>
+                    <select
+                      value={editLeadId}
+                      onChange={(e) => setEditLeadId(e.target.value)}
+                      style={styles.modalSelect}
+                    >
+                      <option value="">Unassigned</option>
+                      {qaLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                    </select>
+                  </div>
+                  <div style={styles.inputGroup}>
+                    <label style={styles.modalLabel}>Description</label>
+                    <textarea
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      rows={4}
+                      style={styles.modalTextarea}
+                    />
+                  </div>
+                  <div style={styles.modalActions}>
+                    <button type="button" className="btn-secondary" onClick={() => setEditMode(false)} style={{ padding: '10px 20px' }}>Cancel</button>
+                    <button type="submit" className="btn-primary" style={{ padding: '10px 20px' }} disabled={savingEdit}>
+                      {savingEdit ? 'Saving...' : 'Save Changes'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  {/* Status Tracker Control */}
+                  <div style={styles.detailSection}>
+                    <h4 style={styles.detailTitle}>QA status</h4>
+                    <div style={styles.statusButtonsGroup}>
+                      {PROJECT_STATUSES.map(s => (
+                        <button
+                          key={s}
+                          disabled={!canEdit}
+                          onClick={() => canEdit && handleStatusChange(activeProject.id, s)}
+                          style={{
+                            ...styles.statusSelectorBtn,
+                            borderColor: activeProject.status === s ? `var(--status-${s.toLowerCase()})` : 'var(--glass-border)',
+                            background: activeProject.status === s ? 'var(--surface-hover)' : 'transparent',
+                            color: activeProject.status === s ? 'var(--text-strong)' : 'var(--text-muted)',
+                            cursor: canEdit ? 'pointer' : 'default',
+                            opacity: canEdit ? 1 : 0.7,
+                          }}
+                        >
+                          <span style={{
+                            ...styles.statusDot,
+                            background: `var(--status-${s.toLowerCase()})`
+                          }} />
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={styles.detailSection}>
+                    <h4 style={styles.detailTitle}>QA Project Scope</h4>
+                    <p style={styles.detailDescText}>{activeProject.description || "No description provided."}</p>
+                    <div style={styles.metaRow}>
+                      <span>Vendor/Developer: <strong>{activeProject.vendor || 'Not specified'}</strong></span>
+                      <span>QA Lead: <strong>{activeProject.lead ? activeProject.lead.full_name : 'Unassigned'}</strong></span>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {/* Team / Project Members Section */}
               <div style={styles.detailSection}>
@@ -748,6 +968,68 @@ export const ProjectTracker = ({ onSelectProject }) => {
                     <button type="submit" className="btn-secondary" style={styles.addMemberBtn} disabled={!addMemberId}>
                       <UserPlus size={14} /> Add
                     </button>
+                  </form>
+                )}
+              </div>
+
+              {/* Versions Section */}
+              <div style={styles.detailSection}>
+                <h4 style={styles.detailTitle}>
+                  <GitBranch size={16} style={{ marginRight: '6px' }} />
+                  Versions ({projectVersions.length})
+                </h4>
+                <div style={styles.teamList}>
+                  {projectVersions.length === 0 ? (
+                    <p style={styles.noComments}>No versions added yet.</p>
+                  ) : (
+                    projectVersions.map(v => (
+                      <div key={v.id} style={styles.teamRow}>
+                        <span style={styles.teamName}>{v.version_name}</span>
+                        <span style={styles.teamRole}>{v.status}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {canEdit && (
+                  <form onSubmit={handleAddVersion} style={styles.docUploadForm}>
+                    <div style={styles.row}>
+                      <input
+                        type="text"
+                        value={newVersionName}
+                        onChange={(e) => setNewVersionName(e.target.value)}
+                        placeholder="Version number, e.g. v1.0, build 42"
+                        style={{ ...styles.modalInput, flex: 1 }}
+                      />
+                      <input
+                        type="text"
+                        value={newVersionComponent}
+                        onChange={(e) => setNewVersionComponent(e.target.value)}
+                        placeholder="Component (optional)"
+                        style={{ ...styles.modalInput, flex: 1 }}
+                      />
+                    </div>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={styles.modalLabel}>
+                          <TagIcon size={11} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                          Changelog document (optional)
+                        </label>
+                        <input
+                          type="file"
+                          onChange={(e) => setNewVersionChangelogFile(e.target.files?.[0] || null)}
+                          style={styles.docFileInput}
+                          accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        className="btn-secondary"
+                        style={{ ...styles.addMemberBtn, alignSelf: 'flex-end' }}
+                        disabled={!newVersionName.trim() || addingVersion}
+                      >
+                        {addingVersion ? 'Adding...' : 'Add Version'}
+                      </button>
+                    </div>
                   </form>
                 )}
               </div>
@@ -1094,6 +1376,26 @@ const styles = {
     color: 'var(--text-muted)',
     cursor: 'pointer',
   },
+  watchBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '6px 10px',
+    fontSize: '12px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+  },
+  metaRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '12px',
+    color: 'var(--text-subtle)',
+    marginTop: '10px',
+  },
   modalForm: {
     display: 'flex',
     flexDirection: 'column',
@@ -1136,14 +1438,6 @@ const styles = {
     outline: 'none',
     resize: 'vertical',
     fontSize: '14px',
-  },
-  existingProjectNote: {
-    padding: '10px 12px',
-    border: '2px solid var(--primary-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    background: 'var(--primary-soft)',
-    color: 'var(--text-main)',
-    fontSize: '13px',
   },
   row: {
     display: 'flex',

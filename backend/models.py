@@ -31,6 +31,7 @@ class Project(Base):
     key = Column(String, unique=True, index=True, nullable=False)  # e.g., "TEST"
     description = Column(Text, nullable=True)
     status = Column(String, default="Intake")  # Intake, Reviewing, Testing, Blocked, Completed, Archived
+    vendor = Column(String, nullable=True)  # Vendor/Developer details
     lead_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -252,9 +253,10 @@ class ProjectDocument(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    version_id = Column(Integer, ForeignKey("versions.id"), nullable=True)  # optional: scopes doc (e.g. changelog) to a version
     uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String, nullable=False)  # e.g. "BRD v2"
-    doc_type = Column(String, default="Other")  # BRD, Report, Test Plan, Other
+    doc_type = Column(String, default="Other")  # BRD, Report, Test Plan, Changelog, Other
     file_url = Column(String, nullable=False)
     original_filename = Column(String, nullable=False)
     content_type = Column(String, nullable=True)
@@ -263,6 +265,7 @@ class ProjectDocument(Base):
 
     # Relationships
     project = relationship("Project", back_populates="documents")
+    version = relationship("Version")
     uploaded_by = relationship("User")
 
 

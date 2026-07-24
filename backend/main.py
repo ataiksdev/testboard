@@ -147,6 +147,20 @@ def ensure_sqlite_schema():
         if "is_active" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
 
+        project_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(projects)")).fetchall()
+        }
+        if "vendor" not in project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN vendor VARCHAR"))
+
+        document_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(project_documents)")).fetchall()
+        }
+        if "version_id" not in document_columns:
+            connection.execute(text("ALTER TABLE project_documents ADD COLUMN version_id INTEGER"))
+
         # Migrate legacy "Member" role to the new "QA" role
         connection.execute(text("UPDATE users SET role = 'QA' WHERE role = 'Member'"))
 
@@ -585,6 +599,7 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(requi
         key=project_in.key.upper(),
         description=project_in.description,
         status=project_in.status,
+        vendor=project_in.vendor,
         lead_id=lead_id
     )
     db.add(new_project)
@@ -647,6 +662,8 @@ def update_project(project_id: int, project_in: ProjectUpdate, background_tasks:
         project.description = project_in.description
     if project_in.status is not None:
         project.status = project_in.status
+    if project_in.vendor is not None:
+        project.vendor = project_in.vendor
     if project_in.lead_id is not None:
         require_active_user(db, project_in.lead_id, detail="Project lead not found")
         project.lead_id = project_in.lead_id
@@ -785,11 +802,14 @@ async def upload_project_document(
     project_id: int,
     title: str = Form(...),
     doc_type: str = Form("Other"),
+    version_id: Optional[int] = Form(None),
     file: UploadFile = File(...),
     current_user: User = Depends(require_roles("Admin", "PM", "QA")),
     db: Session = Depends(get_db)
 ):
     require_project(db, project_id)
+    if version_id is not None:
+        require_version_for_project(db, version_id, project_id)
 
     extension = DOCUMENT_MIME_TYPES.get(file.content_type)
     if not extension:
@@ -806,6 +826,7 @@ async def upload_project_document(
 
     document = ProjectDocument(
         project_id=project_id,
+        version_id=version_id,
         uploaded_by_id=current_user.id,
         title=title,
         doc_type=doc_type,

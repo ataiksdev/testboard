@@ -62,6 +62,7 @@ class ProjectBase(BaseModel):
     key: str
     description: Optional[str] = None
     status: str = "Intake"
+    vendor: Optional[str] = None
 
 class ProjectCreate(ProjectBase):
     lead_id: Optional[int] = None
@@ -71,6 +72,7 @@ class ProjectUpdate(BaseModel):
     key: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    vendor: Optional[str] = None
     lead_id: Optional[int] = None
 
 class ProjectOut(ProjectBase):
@@ -112,6 +114,7 @@ class UserProjectOut(BaseModel):
 class ProjectDocumentOut(BaseModel):
     id: int
     project_id: int
+    version_id: Optional[int] = None
     title: str
     doc_type: str
     file_url: str

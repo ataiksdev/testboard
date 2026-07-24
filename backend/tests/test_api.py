@@ -1279,3 +1279,66 @@ def test_label_suggestions():
     resp = client.get(f"/api/projects/{project['id']}/labels/suggestions", headers=admin_headers)
     assert resp.status_code == 200
     assert resp.json() == ["flaky", "perf"]
+
+
+def test_project_vendor_field():
+    admin_headers = _make_admin()
+    project = client.post(
+        "/api/projects",
+        json={"name": "Vendor Proj", "key": "VDP", "vendor": "Acme Corp"},
+        headers=admin_headers
+    ).json()
+    assert project["vendor"] == "Acme Corp"
+
+    # Update the vendor
+    resp = client.put(f"/api/projects/{project['id']}", json={"vendor": "Globex Inc"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["vendor"] == "Globex Inc"
+
+    # Project created without a vendor defaults to null
+    project_b = client.post("/api/projects", json={"name": "No Vendor Proj", "key": "NVP"}, headers=admin_headers).json()
+    assert project_b["vendor"] is None
+
+
+def test_version_scoped_document_upload(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    project_a = client.post("/api/projects", json={"name": "Changelog Proj A", "key": "CLA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Changelog Proj B", "key": "CLB"}, headers=admin_headers).json()
+    version = client.post(
+        f"/api/projects/{project_a['id']}/versions",
+        json={"version_name": "v1.0"},
+        headers=admin_headers
+    ).json()
+
+    resp = client.post(
+        f"/api/projects/{project_a['id']}/documents",
+        headers=admin_headers,
+        data={"title": "v1.0 Changelog", "doc_type": "Changelog", "version_id": str(version["id"])},
+        files={"file": ("changelog.txt", b"- fixed things", "text/plain")}
+    )
+    assert resp.status_code == 200
+    doc = resp.json()
+    assert doc["version_id"] == version["id"]
+    assert doc["doc_type"] == "Changelog"
+
+    # A version_id belonging to a different project is rejected
+    resp = client.post(
+        f"/api/projects/{project_b['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Cross-project", "doc_type": "Changelog", "version_id": str(version["id"])},
+        files={"file": ("changelog.txt", b"- fixed things", "text/plain")}
+    )
+    assert resp.status_code == 404
+
+    # A document uploaded without a version_id is still project-level (null)
+    resp = client.post(
+        f"/api/projects/{project_a['id']}/documents",
+        headers=admin_headers,
+        data={"title": "General doc", "doc_type": "Other"},
+        files={"file": ("notes.txt", b"notes", "text/plain")}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["version_id"] is None
