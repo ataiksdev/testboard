@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
-  Bug as BugIcon, MessageSquare, User as UserIcon,
-  AlertTriangle, CheckCircle, Clock, X, Eye, FileText, ImagePlus, Clipboard, Search
+  Bug as BugIcon, User as UserIcon, AlertTriangle, X, Search, RotateCcw, CheckSquare, Square,
+  FolderKanban, GitBranch, Flame, Flag, Tag, FilterX, Bookmark
 } from 'lucide-react';
 import { canManageBugs, canEditBugFields } from '../utils/roles';
+import { BugCreateModal } from './BugCreateModal';
+import { BugDetailModal } from './BugDetailModal';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const DEV_ALLOWED_BUG_STATUSES = ["Open", "In Progress", "Resolved"];
@@ -29,6 +31,18 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [filterType, setFilterType] = useState('');
   const [filterOwnerId, setFilterOwnerId] = useState('');
 
+  // Saved filters
+  const [savedFilters, setSavedFilters] = useState([]);
+  const [showSaveForm, setShowSaveForm] = useState(false);
+  const [newFilterName, setNewFilterName] = useState('');
+  const [newFilterShared, setNewFilterShared] = useState(false);
+
+  // Bulk actions
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedBugIds, setSelectedBugIds] = useState([]);
+  const [bulkStatus, setBulkStatus] = useState('');
+  const [bulkOwnerId, setBulkOwnerId] = useState('');
+
   // Drag and drop
   const [draggedBugId, setDraggedBugId] = useState(null);
   const [dragOverStatus, setDragOverStatus] = useState(null);
@@ -37,29 +51,14 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [activeBug, setActiveBug] = useState(null);
-  const [bugComments, setBugComments] = useState([]);
-  const [newCommentText, setNewCommentText] = useState('');
-
-  // Bug Create Form States
-  const [bugTitle, setBugTitle] = useState('');
-  const [bugDesc, setBugDesc] = useState('');
-  const [bugExpectedBehavior, setBugExpectedBehavior] = useState('');
   const [bugProjId, setBugProjId] = useState(selectedProject ? selectedProject.id : '');
-  const [bugVerId, setBugVerId] = useState('');
-  const [bugStatus, setBugStatus] = useState('Open');
-  const [bugSeverity, setBugSeverity] = useState('Medium');
-  const [bugPriority, setBugPriority] = useState('Medium');
-  const [bugType, setBugType] = useState('Functional');
-  const [bugOwnerId, setBugOwnerId] = useState('');
-  const [bugIsBlocker, setBugIsBlocker] = useState(false);
-  const [bugScreenshotData, setBugScreenshotData] = useState('');
-  const [bugScreenshotName, setBugScreenshotName] = useState('');
 
   const { token, API_URL, user } = useAuth();
   const canEdit = canManageBugs(user.role);
   const isDev = user.role === 'Dev';
   const bugStatusOptions = isDev ? DEV_ALLOWED_BUG_STATUSES : BUG_STATUSES;
   const canEditFields = canEditBugFields(user.role);
+  const canDeleteAttachment = ['Admin', 'QA'].includes(user.role);
 
   useEffect(() => {
     if (selectedProject) {
@@ -70,6 +69,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
   useEffect(() => {
     fetchCoreData();
+    fetchSavedFilters();
   }, []);
 
   useEffect(() => {
@@ -91,12 +91,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     }
   }, [bugProjId]);
 
+  const authHeaders = { 'Authorization': `Bearer ${token}` };
+
   const fetchCoreData = async () => {
     try {
-      const headers = { 'Authorization': `Bearer ${token}` };
       const [projRes, userRes] = await Promise.all([
-        fetch(`${API_URL}/api/projects`, { headers }),
-        fetch(`${API_URL}/api/users`, { headers })
+        fetch(`${API_URL}/api/projects`, { headers: authHeaders }),
+        fetch(`${API_URL}/api/users`, { headers: authHeaders })
       ]);
       if (projRes.ok && userRes.ok) {
         const projData = await projRes.json();
@@ -119,12 +120,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         ? `${API_URL}/api/bugs?project_id=${filterProjectId}`
         : `${API_URL}/api/bugs`;
 
-      const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await fetch(url, { headers: authHeaders });
       if (response.ok) {
-        const data = await response.json();
-        setBugs(data);
+        setBugs(await response.json());
       }
     } catch (err) {
       console.error(err);
@@ -135,21 +133,20 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
 
   const fetchVersions = async (projId) => {
     try {
-      const response = await fetch(`${API_URL}/api/projects/${projId}/versions`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setVersions(data);
-      }
+      const response = await fetch(`${API_URL}/api/projects/${projId}/versions`, { headers: authHeaders });
+      if (response.ok) setVersions(await response.json());
     } catch (err) {
       console.error(err);
     }
   };
 
-  const getScreenshotUrl = (screenshotUrl) => {
-    if (!screenshotUrl) return '';
-    return screenshotUrl.startsWith('http') ? screenshotUrl : `${API_URL}${screenshotUrl}`;
+  const fetchSavedFilters = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/bugs/saved-filters`, { headers: authHeaders });
+      if (response.ok) setSavedFilters(await response.json());
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const formatBugKey = (bug) => {
@@ -158,130 +155,16 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     return `${bug.project.key}-${String(seq).padStart(3, '0')}`;
   };
 
-  const readScreenshotFile = (file, onLoaded) => {
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      alert("Screenshot must be an image file");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      alert("Screenshot must be 5 MB or smaller");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => onLoaded(reader.result, file.name || 'Pasted screenshot');
-    reader.readAsDataURL(file);
-  };
-
-  const setScreenshotFile = (file) => {
-    readScreenshotFile(file, (dataUrl, name) => {
-      setBugScreenshotData(dataUrl);
-      setBugScreenshotName(name);
-    });
-  };
-
-  const handleScreenshotPaste = (e) => {
-    const items = Array.from(e.clipboardData?.items || []);
-    const imageItem = items.find(item => item.type.startsWith('image/'));
-    if (!imageItem) return;
-
-    e.preventDefault();
-    const file = imageItem.getAsFile();
-    setScreenshotFile(file);
-  };
-
-  const clearScreenshot = () => {
-    setBugScreenshotData('');
-    setBugScreenshotName('');
-  };
-
-  const uploadDetailScreenshot = (file) => {
-    if (!activeBug) return;
-    readScreenshotFile(file, (dataUrl) => {
-      handleBugFieldUpdate(activeBug.id, { screenshot_data: dataUrl });
-    });
-  };
-
-  const handleDetailScreenshotPaste = (e) => {
-    const items = Array.from(e.clipboardData?.items || []);
-    const imageItem = items.find(item => item.type.startsWith('image/'));
-    if (!imageItem) return;
-
-    e.preventDefault();
-    uploadDetailScreenshot(imageItem.getAsFile());
-  };
-
-  const handleCreateBug = async (e) => {
-    e.preventDefault();
-    try {
-      const response = await fetch(`${API_URL}/api/bugs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          title: bugTitle,
-          description: bugDesc,
-          expected_behavior: bugExpectedBehavior,
-          project_id: parseInt(bugProjId),
-          version_id: bugVerId ? parseInt(bugVerId) : null,
-          status: bugStatus,
-          severity: bugSeverity,
-          priority: bugPriority,
-          bug_type: bugType,
-          is_blocker: bugIsBlocker,
-          owner_id: bugOwnerId ? parseInt(bugOwnerId) : null,
-          screenshot_data: bugScreenshotData || null
-        })
-      });
-
-      if (response.ok) {
-        setShowCreateModal(false);
-        // Clear
-        setBugTitle('');
-        setBugDesc('');
-        setBugExpectedBehavior('');
-        setBugVerId('');
-        setBugStatus('Open');
-        setBugSeverity('Medium');
-        setBugPriority('Medium');
-        setBugType('Functional');
-        setBugOwnerId('');
-        setBugIsBlocker(false);
-        clearScreenshot();
-
-        fetchBugs();
-      } else {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to log bug");
-      }
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
   const handleBugFieldUpdate = async (bugId, fields) => {
     try {
       const response = await fetch(`${API_URL}/api/bugs/${bugId}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(fields)
       });
-
       if (!response.ok) throw new Error("Failed to update bug");
-
       const updatedBug = await response.json();
-
-      // Update local state lists
-      setBugs(bugs.map(b => b.id === bugId ? updatedBug : b));
-      if (activeBug && activeBug.id === bugId) {
-        setActiveBug(updatedBug);
-      }
+      setBugs(prev => prev.map(b => b.id === bugId ? updatedBug : b));
     } catch (err) {
       alert(err.message);
     }
@@ -296,45 +179,104 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const handleOpenDetail = (bug) => {
     setActiveBug(bug);
     setShowDetailModal(true);
-    fetchBugComments(bug.id);
   };
 
-  const fetchBugComments = async (bugId) => {
+  const handleBugUpdated = (updatedBug) => {
+    setBugs(prev => prev.map(b => b.id === updatedBug.id ? updatedBug : b));
+    setActiveBug(updatedBug);
+  };
+
+  const handleJumpToBug = async (bugSummary) => {
     try {
-      const response = await fetch(`${API_URL}/api/comments?bug_id=${bugId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setBugComments(data);
+      const projId = bugSummary.project ? bugSummary.project.id : null;
+      const url = projId ? `${API_URL}/api/bugs?project_id=${projId}` : `${API_URL}/api/bugs`;
+      const res = await fetch(url, { headers: authHeaders });
+      if (res.ok) {
+        const data = await res.json();
+        const found = data.find(b => b.id === bugSummary.id);
+        if (found) {
+          setActiveBug(found);
+          setShowDetailModal(true);
+        }
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handlePostComment = async (e) => {
-    e.preventDefault();
-    if (!newCommentText.trim()) return;
-
+  const handleSaveCurrentFilters = async () => {
+    if (!newFilterName.trim()) return;
     try {
-      const response = await fetch(`${API_URL}/api/comments`, {
+      const response = await fetch(`${API_URL}/api/bugs/saved-filters`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          bug_id: activeBug.id,
-          text: newCommentText
+          name: newFilterName,
+          is_shared: newFilterShared,
+          filters: {
+            project_id: filterProjectId || null,
+            severity: filterSeverity || null,
+            priority: filterPriority || null,
+            bug_type: filterType || null,
+            owner_id: filterOwnerId || null,
+            search: searchQuery || null,
+          }
         })
       });
+      if (!response.ok) throw new Error("Failed to save filter");
+      setNewFilterName('');
+      setNewFilterShared(false);
+      setShowSaveForm(false);
+      fetchSavedFilters();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
-      if (response.ok) {
-        setNewCommentText('');
-        fetchBugComments(activeBug.id);
-      } else {
-        throw new Error("Failed to post update comment");
+  const handleLoadFilter = (saved) => {
+    const f = saved.filters || {};
+    setFilterProjectId(f.project_id ? String(f.project_id) : '');
+    setFilterSeverity(f.severity || '');
+    setFilterPriority(f.priority || '');
+    setFilterType(f.bug_type || '');
+    setFilterOwnerId(f.owner_id ? String(f.owner_id) : '');
+    setSearchQuery(f.search || '');
+  };
+
+  const handleDeleteSavedFilter = async (id) => {
+    try {
+      await fetch(`${API_URL}/api/bugs/saved-filters/${id}`, { method: 'DELETE', headers: authHeaders });
+      fetchSavedFilters();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const toggleBugSelection = (bugId) => {
+    setSelectedBugIds(prev => prev.includes(bugId) ? prev.filter(id => id !== bugId) : [...prev, bugId]);
+  };
+
+  const clearSelection = () => {
+    setSelectedBugIds([]);
+    setBulkStatus('');
+    setBulkOwnerId('');
+  };
+
+  const handleBulkApply = async (fields) => {
+    if (selectedBugIds.length === 0) return;
+    try {
+      const response = await fetch(`${API_URL}/api/bugs/bulk-update`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ bug_ids: selectedBugIds, fields })
+      });
+      if (!response.ok) throw new Error("Bulk update failed");
+      const result = await response.json();
+      fetchBugs();
+      clearSelection();
+      if (result.failed && result.failed.length > 0) {
+        alert(`${result.updated.length} bug(s) updated. ${result.failed.length} could not be updated:\n` +
+          result.failed.map(f => `#${f.bug_id}: ${f.reason}`).join('\n'));
       }
     } catch (err) {
       alert(err.message);
@@ -376,14 +318,14 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           )}
         </div>
 
-        <div style={styles.searchRow}>
+        <div style={styles.toolbarRow}>
           <div style={styles.searchBox}>
-            <Search size={16} color="var(--text-subtle)" />
+            <Search size={15} color="var(--text-subtle)" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search bugs by title..."
+              placeholder="Search bugs..."
               style={styles.searchInput}
             />
             {searchQuery && (
@@ -393,15 +335,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                 style={styles.searchClearBtn}
                 aria-label="Clear search"
               >
-                <X size={14} />
+                <X size={13} />
               </button>
             )}
           </div>
-        </div>
 
-        <div style={styles.filtersRow}>
-          <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Project</label>
+          <div style={styles.iconFilterGroup} title="Filter by project">
+            <FolderKanban size={14} color="var(--header-banner-label)" />
             <select
               value={filterProjectId}
               onChange={(e) => {
@@ -410,7 +350,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   onClearProjectFilter();
                 }
               }}
-              style={styles.filterSelect}
+              style={styles.iconFilterSelect}
             >
               <option value="">All Projects</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.key})</option>)}
@@ -418,12 +358,12 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           </div>
 
           {filterProjectId && (
-            <div style={styles.filterGroup}>
-              <label style={styles.filterLabel}>Version</label>
+            <div style={styles.iconFilterGroup} title="Filter by version">
+              <GitBranch size={14} color="var(--header-banner-label)" />
               <select
                 value={filterVersionId}
                 onChange={(e) => setFilterVersionId(e.target.value)}
-                style={styles.filterSelect}
+                style={styles.iconFilterSelect}
               >
                 <option value="">All Versions</option>
                 {versions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
@@ -431,72 +371,130 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             </div>
           )}
 
-          <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Severity</label>
+          <div style={styles.iconFilterGroup} title="Filter by severity">
+            <Flame size={14} color="var(--header-banner-label)" />
             <select
               value={filterSeverity}
               onChange={(e) => setFilterSeverity(e.target.value)}
-              style={styles.filterSelect}
+              style={styles.iconFilterSelect}
             >
               <option value="">All Severities</option>
               {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
             </select>
           </div>
 
-          <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Priority</label>
+          <div style={styles.iconFilterGroup} title="Filter by priority">
+            <Flag size={14} color="var(--header-banner-label)" />
             <select
               value={filterPriority}
               onChange={(e) => setFilterPriority(e.target.value)}
-              style={styles.filterSelect}
+              style={styles.iconFilterSelect}
             >
               <option value="">All Priorities</option>
               {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
 
-          <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Type</label>
+          <div style={styles.iconFilterGroup} title="Filter by type">
+            <Tag size={14} color="var(--header-banner-label)" />
             <select
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}
-              style={styles.filterSelect}
+              style={styles.iconFilterSelect}
             >
               <option value="">All Types</option>
               {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
 
-          <div style={styles.filterGroup}>
-            <label style={styles.filterLabel}>Owner</label>
+          <div style={styles.iconFilterGroup} title="Filter by owner">
+            <UserIcon size={14} color="var(--header-banner-label)" />
             <select
               value={filterOwnerId}
               onChange={(e) => setFilterOwnerId(e.target.value)}
-              style={styles.filterSelect}
+              style={styles.iconFilterSelect}
             >
               <option value="">All Owners</option>
               {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
             </select>
           </div>
 
-          {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId) && (
+          <div style={styles.toolbarActions}>
+            {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId) && (
+              <button
+                type="button"
+                style={styles.iconActionBtn}
+                title="Clear filters"
+                aria-label="Clear filters"
+                onClick={() => {
+                  setSearchQuery('');
+                  setFilterSeverity('');
+                  setFilterPriority('');
+                  setFilterType('');
+                  setFilterOwnerId('');
+                  setFilterVersionId('');
+                }}
+              >
+                <FilterX size={16} />
+              </button>
+            )}
             <button
               type="button"
-              className="btn-secondary"
-              style={styles.clearFiltersBtn}
-              onClick={() => {
-                setSearchQuery('');
-                setFilterSeverity('');
-                setFilterPriority('');
-                setFilterType('');
-                setFilterOwnerId('');
-                setFilterVersionId('');
-              }}
+              style={styles.iconActionBtn}
+              title="Save current filters"
+              aria-label="Save current filters"
+              onClick={() => setShowSaveForm(!showSaveForm)}
             >
-              Clear Filters
+              <Bookmark size={16} />
             </button>
-          )}
+            {canEdit && (
+              <button
+                type="button"
+                style={{ ...styles.iconActionBtn, ...(selectMode ? styles.iconActionBtnActive : {}) }}
+                title={selectMode ? 'Exit select mode' : 'Select multiple bugs'}
+                aria-label={selectMode ? 'Exit select mode' : 'Select multiple bugs'}
+                onClick={() => { setSelectMode(!selectMode); clearSelection(); }}
+              >
+                {selectMode ? <CheckSquare size={16} /> : <Square size={16} />}
+              </button>
+            )}
+          </div>
         </div>
+
+        {(savedFilters.length > 0 || showSaveForm) && (
+          <div style={styles.savedFiltersRow}>
+            {savedFilters.map(sf => (
+              <div key={sf.id} style={styles.savedFilterChip}>
+                <button type="button" style={styles.savedFilterBtn} onClick={() => handleLoadFilter(sf)}>
+                  {sf.name}{sf.is_shared ? ' (shared)' : ''}
+                </button>
+                <button type="button" style={styles.savedFilterRemove} onClick={() => handleDeleteSavedFilter(sf.id)}>
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+            {showSaveForm && (
+              <div style={styles.saveFilterForm}>
+                <input
+                  type="text"
+                  value={newFilterName}
+                  onChange={(e) => setNewFilterName(e.target.value)}
+                  placeholder="View name..."
+                  style={styles.saveFilterInput}
+                  autoFocus
+                />
+                {user.role !== 'Guest' && (
+                  <label style={styles.saveFilterSharedLabel}>
+                    <input type="checkbox" checked={newFilterShared} onChange={(e) => setNewFilterShared(e.target.checked)} />
+                    Shared
+                  </label>
+                )}
+                <button type="button" className="btn-primary" style={styles.saveFilterSubmit} onClick={handleSaveCurrentFilters}>Save</button>
+                <button type="button" className="btn-secondary" style={styles.saveFilterSubmit} onClick={() => setShowSaveForm(false)}>Cancel</button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Board */}
@@ -504,7 +502,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         <div style={styles.board}>
           {BUG_STATUSES.map(status => {
             const statusBugs = filteredBugs.filter(b => b.status === status);
-            const isDroppable = canEditFields && bugStatusOptions.includes(status);
+            const isDroppable = canEditFields && !selectMode && bugStatusOptions.includes(status);
             return (
               <div
                 key={status}
@@ -539,23 +537,34 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                       key={bug.id}
                       style={{
                         ...styles.card,
-                        ...(canEditFields ? styles.cardDraggable : {}),
+                        ...(canEditFields && !selectMode ? styles.cardDraggable : {}),
                         opacity: draggedBugId === bug.id ? 0.4 : 1,
                       }}
-                      draggable={canEditFields}
+                      draggable={canEditFields && !selectMode}
                       onDragStart={(e) => {
                         setDraggedBugId(bug.id);
                         e.dataTransfer.effectAllowed = 'move';
                         e.dataTransfer.setData('text/plain', String(bug.id));
                       }}
                       onDragEnd={() => { setDraggedBugId(null); setDragOverStatus(null); }}
-                      onClick={() => handleOpenDetail(bug)}
+                      onClick={() => selectMode ? toggleBugSelection(bug.id) : handleOpenDetail(bug)}
                       className="animate-slide-up"
                     >
                       <div style={styles.cardHeader}>
-                        <span style={styles.cardKey}>
-                          {formatBugKey(bug)}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {selectMode && (
+                            <input
+                              type="checkbox"
+                              checked={selectedBugIds.includes(bug.id)}
+                              onChange={() => {}}
+                              onClick={(e) => { e.stopPropagation(); toggleBugSelection(bug.id); }}
+                              style={styles.selectCheckbox}
+                            />
+                          )}
+                          <span style={styles.cardKey}>
+                            {formatBugKey(bug)}
+                          </span>
+                        </div>
                         <div style={styles.cardBadgeGroup}>
                           <span style={{
                             ...styles.sevBadge,
@@ -577,9 +586,17 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                       </div>
 
                       <h4 style={styles.cardTitle}>{bug.title}</h4>
-                      {bug.bug_type && (
-                        <span style={styles.bugTypeTag}>{bug.bug_type}</span>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        {bug.bug_type && (
+                          <span style={styles.bugTypeTag}>{bug.bug_type}</span>
+                        )}
+                        {bug.reopen_count > 0 && (
+                          <span style={styles.reopenedTag}>
+                            <RotateCcw size={9} style={{ marginRight: '2px' }} />
+                            Reopened ×{bug.reopen_count}
+                          </span>
+                        )}
+                      </div>
 
                       <div style={styles.cardFooter}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -607,387 +624,71 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         </div>
       </div>
 
-      {/* CREATE BUG MODAL */}
-      {showCreateModal && (
-        <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '560px' }}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Log a QA Bug Ticket</h3>
-              <button style={styles.closeBtn} onClick={() => setShowCreateModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <form onSubmit={handleCreateBug} style={styles.modalForm}>
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Bug Title</label>
-                <input
-                  type="text"
-                  value={bugTitle}
-                  onChange={(e) => setBugTitle(e.target.value)}
-                  placeholder="e.g. CORS error on /api/reports endpoint"
-                  required
-                  style={styles.modalInput}
-                />
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Steps to Reproduce & Description</label>
-                <textarea
-                  value={bugDesc}
-                  onChange={(e) => setBugDesc(e.target.value)}
-                  placeholder="1. Go to Reports tab.&#10;2. Select Date range.&#10;3. Observe console error..."
-                  rows={4}
-                  style={styles.modalTextarea}
-                />
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Expectations</label>
-                <textarea
-                  value={bugExpectedBehavior}
-                  onChange={(e) => setBugExpectedBehavior(e.target.value)}
-                  placeholder="What should have happened instead?"
-                  rows={3}
-                  style={styles.modalTextarea}
-                />
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Select Project</label>
-                <select
-                  value={bugProjId}
-                  onChange={(e) => setBugProjId(e.target.value)}
-                  required
-                  style={styles.modalSelect}
-                >
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
-
-              <div style={styles.row}>
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Target Version</label>
-                  <select
-                    value={bugVerId}
-                    onChange={(e) => setBugVerId(e.target.value)}
-                    style={styles.modalSelect}
-                  >
-                    <option value="">No Version</option>
-                    {versions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
-                  </select>
-                </div>
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Severity</label>
-                  <select
-                    value={bugSeverity}
-                    onChange={(e) => setBugSeverity(e.target.value)}
-                    style={styles.modalSelect}
-                  >
-                    {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
-                  </select>
-                </div>
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Priority</label>
-                  <select
-                    value={bugPriority}
-                    onChange={(e) => setBugPriority(e.target.value)}
-                    style={styles.modalSelect}
-                  >
-                    {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Type</label>
-                  <select
-                    value={bugType}
-                    onChange={(e) => setBugType(e.target.value)}
-                    style={styles.modalSelect}
-                  >
-                    {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Assign Owner</label>
-                <select
-                  value={bugOwnerId}
-                  onChange={(e) => setBugOwnerId(e.target.value)}
-                  style={styles.modalSelect}
-                >
-                  <option value="">Unassigned</option>
-                  {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                </select>
-              </div>
-
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Screenshot</label>
-                <div
-                  style={styles.screenshotDropZone}
-                  onPaste={handleScreenshotPaste}
-                  tabIndex={0}
-                >
-                  <div style={styles.screenshotDropHeader}>
-                    <ImagePlus size={18} color="var(--primary-neon)" />
-                    <span>Paste an image here or choose a file</span>
-                  </div>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setScreenshotFile(e.target.files?.[0])}
-                    style={styles.fileInput}
-                  />
-                  <div style={styles.pasteHint}>
-                    <Clipboard size={12} />
-                    Ctrl+V supports copied screenshots from your clipboard.
-                  </div>
-                </div>
-                {bugScreenshotData && (
-                  <div style={styles.screenshotPreviewWrap}>
-                    <img
-                      src={bugScreenshotData}
-                      alt="Screenshot preview"
-                      style={styles.screenshotPreview}
-                    />
-                    <div style={styles.screenshotPreviewMeta}>
-                      <span>{bugScreenshotName}</span>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={clearScreenshot}
-                        style={styles.clearScreenshotBtn}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div style={styles.checkboxGroup}>
-                <input
-                  type="checkbox"
-                  id="create-is-blocker"
-                  checked={bugIsBlocker}
-                  onChange={(e) => setBugIsBlocker(e.target.checked)}
-                  style={styles.checkbox}
-                />
-                <label htmlFor="create-is-blocker" style={styles.checkboxLabel}>
-                  <AlertTriangle size={14} color="var(--accent-rust)" style={{ marginRight: '4px' }} />
-                  Flag this bug as a <strong>Blocker</strong>
-                </label>
-              </div>
-
-              <div style={styles.modalActions}>
-                <button type="button" className="btn-secondary" onClick={() => setShowCreateModal(false)} style={{ padding: '10px 20px' }}>Cancel</button>
-                <button type="submit" className="btn-primary" style={{ padding: '10px 20px' }}>Log Ticket</button>
-              </div>
-            </form>
-          </div>
+      {selectMode && selectedBugIds.length > 0 && (
+        <div style={styles.bulkActionBar}>
+          <span style={styles.bulkCount}>{selectedBugIds.length} selected</span>
+          <select value={bulkStatus} onChange={(e) => setBulkStatus(e.target.value)} style={styles.bulkSelect}>
+            <option value="">Set status...</option>
+            {BUG_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!bulkStatus}
+            onClick={() => handleBulkApply({ status: bulkStatus })}
+            style={styles.bulkApplyBtn}
+          >
+            Apply Status
+          </button>
+          <select value={bulkOwnerId} onChange={(e) => setBulkOwnerId(e.target.value)} style={styles.bulkSelect}>
+            <option value="">Set owner...</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+          </select>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!bulkOwnerId}
+            onClick={() => handleBulkApply({ owner_id: parseInt(bulkOwnerId) })}
+            style={styles.bulkApplyBtn}
+          >
+            Apply Owner
+          </button>
+          <button type="button" className="btn-secondary" onClick={clearSelection} style={styles.bulkApplyBtn}>
+            Clear
+          </button>
         </div>
       )}
 
-      {/* BUG DETAILS & ACTIVITY MODAL */}
+      {showCreateModal && (
+        <BugCreateModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={() => { setShowCreateModal(false); fetchBugs(); }}
+          projects={projects}
+          versions={versions}
+          users={users}
+          bugProjId={bugProjId}
+          setBugProjId={setBugProjId}
+          token={token}
+          API_URL={API_URL}
+        />
+      )}
+
       {showDetailModal && activeBug && (
-        <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '600px' }}>
-            <div style={styles.modalHeader}>
-              <div>
-                <span style={styles.modalSubheading}>
-                  {activeBug.project ? activeBug.project.name : 'Unknown Project'} • {formatBugKey(activeBug)}
-                </span>
-                <h3 style={styles.modalTitle}>{activeBug.title}</h3>
-              </div>
-              <button style={styles.closeBtn} onClick={() => setShowDetailModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={styles.modalBody}>
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>Steps to Reproduce / Description</h4>
-                <p style={styles.detailDescText}>{activeBug.description || "No description provided."}</p>
-              </div>
-
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>Expectations</h4>
-                <p style={styles.detailDescText}>{activeBug.expected_behavior || "No expectations noted."}</p>
-              </div>
-
-              <div style={styles.row}>
-                {/* Status Dropdown */}
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Status</label>
-                  <select
-                    value={activeBug.status}
-                    disabled={!canEditFields}
-                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { status: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
-                  >
-                    {bugStatusOptions.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                {/* Severity Dropdown */}
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Severity</label>
-                  <select
-                    value={activeBug.severity}
-                    disabled={!canEditFields}
-                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { severity: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
-                  >
-                    {SEVERITIES.map(sev => <option key={sev} value={sev}>{sev}</option>)}
-                  </select>
-                </div>
-                {/* Priority Dropdown */}
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Priority</label>
-                  <select
-                    value={activeBug.priority}
-                    disabled={!canEditFields}
-                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { priority: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
-                  >
-                    {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                </div>
-                {/* Type Dropdown */}
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Type</label>
-                  <select
-                    value={activeBug.bug_type}
-                    disabled={!canEditFields}
-                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { bug_type: e.target.value })}
-                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
-                  >
-                    {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div style={styles.row}>
-                {/* Owner Dropdown */}
-                <div style={{ ...styles.inputGroup, flex: 1 }}>
-                  <label style={styles.modalLabel}>Owner</label>
-                  <select
-                    value={activeBug.owner_id || ''}
-                    disabled={!canEditFields}
-                    onChange={(e) => handleBugFieldUpdate(activeBug.id, { owner_id: e.target.value ? parseInt(e.target.value) : -1 })}
-                    style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
-                  >
-                    <option value="">Unassigned</option>
-                    {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                  </select>
-                </div>
-                {/* Blocker Flag */}
-                <div style={{ ...styles.inputGroup, flex: 1, justifyContent: 'center' }}>
-                  <div style={styles.checkboxGroup}>
-                    <input
-                      type="checkbox"
-                      id="detail-is-blocker"
-                      checked={activeBug.is_blocker}
-                      disabled={!canEditFields}
-                      onChange={(e) => handleBugFieldUpdate(activeBug.id, { is_blocker: e.target.checked })}
-                      style={styles.checkbox}
-                    />
-                    <label htmlFor="detail-is-blocker" style={styles.checkboxLabel}>
-                      Blocker Ticket
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {activeBug.screenshot_url && (
-                <div style={styles.detailSection}>
-                  <h4 style={styles.detailTitle}>Screenshot</h4>
-                  <a
-                    href={getScreenshotUrl(activeBug.screenshot_url)}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={styles.screenshotLink}
-                  >
-                    <img
-                      src={getScreenshotUrl(activeBug.screenshot_url)}
-                      alt="Bug screenshot"
-                      style={styles.detailScreenshot}
-                    />
-                  </a>
-                </div>
-              )}
-
-              {canEdit && (
-                <div style={styles.detailSection}>
-                  <h4 style={styles.detailTitle}>{activeBug.screenshot_url ? 'Replace Screenshot' : 'Add Screenshot'}</h4>
-                  <div
-                    style={styles.screenshotDropZone}
-                    onPaste={handleDetailScreenshotPaste}
-                    tabIndex={0}
-                  >
-                    <div style={styles.screenshotDropHeader}>
-                      <ImagePlus size={18} color="var(--primary-neon)" />
-                      <span>Paste an image here or choose a file</span>
-                    </div>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => uploadDetailScreenshot(e.target.files?.[0])}
-                      style={styles.fileInput}
-                    />
-                    <div style={styles.pasteHint}>
-                      <Clipboard size={12} />
-                      Ctrl+V supports copied screenshots from your clipboard.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div style={styles.metaRow}>
-                <span>Reported by: <strong>{activeBug.reporter.full_name}</strong></span>
-                <span>Logged: {new Date(activeBug.created_at).toLocaleDateString()}</span>
-              </div>
-
-              {/* Bug Comments / Status Updates */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>
-                  <MessageSquare size={16} style={{ marginRight: '6px' }} />
-                  Daily Bug Updates & Comments
-                </h4>
-
-                <form onSubmit={handlePostComment} style={styles.commentForm}>
-                  <textarea
-                    value={newCommentText}
-                    onChange={(e) => setNewCommentText(e.target.value)}
-                    placeholder="Log status update or diagnostic details for this bug..."
-                    rows={2}
-                    required
-                    style={styles.commentInput}
-                  />
-                  <button type="submit" className="btn-primary" style={styles.postBtn}>
-                    Post Update
-                  </button>
-                </form>
-
-                <div style={styles.commentsList}>
-                  {bugComments.length === 0 ? (
-                    <p style={styles.noComments}>No updates posted yet.</p>
-                  ) : (
-                    bugComments.map(comment => (
-                      <div key={comment.id} style={styles.commentRow}>
-                        <div style={styles.commentMeta}>
-                          <strong>{comment.user.full_name}</strong>
-                          <span style={styles.commentTime}>
-                            {new Date(comment.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                          </span>
-                        </div>
-                        <p style={styles.commentText}>{comment.text}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <BugDetailModal
+          bug={activeBug}
+          onClose={() => setShowDetailModal(false)}
+          onUpdated={handleBugUpdated}
+          onJumpToBug={handleJumpToBug}
+          canEditFields={canEditFields}
+          canEdit={canEdit}
+          canDeleteAttachment={canDeleteAttachment}
+          bugStatusOptions={bugStatusOptions}
+          users={users}
+          currentUserId={user.id}
+          token={token}
+          API_URL={API_URL}
+          formatBugKey={formatBugKey}
+        />
       )}
     </div>
   );
@@ -1033,51 +734,31 @@ const styles = {
     borderRadius: 'var(--border-radius-sm)',
     flexShrink: 0,
   },
-  filtersRow: {
+  toolbarRow: {
     display: 'flex',
-    gap: '16px',
+    alignItems: 'center',
+    gap: '8px',
     flexWrap: 'wrap',
-  },
-  filterGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-    minWidth: '180px',
-  },
-  filterLabel: {
-    fontSize: '12px',
-    fontWeight: '700',
-    color: 'var(--header-banner-label)',
-  },
-  filterSelect: {
-    padding: '8px 12px',
-    background: 'var(--header-banner-input-bg)',
-    border: '2px solid var(--header-banner-input-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--header-banner-input-color)',
-    outline: 'none',
-    fontSize: '14px',
-  },
-  searchRow: {
-    marginBottom: '14px',
   },
   searchBox: {
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
-    padding: '8px 12px',
+    gap: '6px',
+    padding: '7px 10px',
     background: 'var(--header-banner-input-bg)',
     border: '2px solid var(--header-banner-input-border)',
     borderRadius: 'var(--border-radius-sm)',
-    maxWidth: '420px',
+    width: '160px',
+    flexShrink: 0,
   },
   searchInput: {
     flex: 1,
+    minWidth: 0,
     background: 'transparent',
     border: 'none',
     outline: 'none',
     color: 'var(--header-banner-input-color)',
-    fontSize: '14px',
+    fontSize: '13px',
     fontFamily: 'inherit',
   },
   searchClearBtn: {
@@ -1089,11 +770,108 @@ const styles = {
     color: 'var(--header-banner-input-color)',
     cursor: 'pointer',
     padding: '2px',
+    flexShrink: 0,
   },
-  clearFiltersBtn: {
-    alignSelf: 'flex-end',
+  iconFilterGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '7px 10px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    flexShrink: 0,
+  },
+  iconFilterSelect: {
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    color: 'var(--header-banner-input-color)',
     fontSize: '13px',
-    padding: '8px 14px',
+    maxWidth: '110px',
+  },
+  toolbarActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginLeft: 'auto',
+  },
+  iconActionBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '34px',
+    height: '34px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--header-banner-input-color)',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  iconActionBtnActive: {
+    background: 'var(--primary-neon)',
+    borderColor: 'var(--primary-neon)',
+    color: '#12100d',
+  },
+  savedFiltersRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    marginTop: '12px',
+  },
+  savedFilterChip: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '4px 4px 4px 10px',
+  },
+  savedFilterBtn: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--header-banner-input-color)',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    padding: '2px 0',
+  },
+  savedFilterRemove: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--header-banner-input-color)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    opacity: 0.7,
+  },
+  saveFilterForm: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  saveFilterInput: {
+    padding: '6px 10px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--header-banner-input-color)',
+    outline: 'none',
+    fontSize: '12px',
+  },
+  saveFilterSharedLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    fontSize: '12px',
+    color: 'var(--header-banner-label)',
+  },
+  saveFilterSubmit: {
+    fontSize: '12px',
+    padding: '6px 10px',
   },
   boardScrollContainer: {
     overflowX: 'auto',
@@ -1179,6 +957,12 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  selectCheckbox: {
+    width: '14px',
+    height: '14px',
+    accentColor: 'var(--primary-neon)',
+    cursor: 'pointer',
+  },
   cardKey: {
     fontSize: '10px',
     fontWeight: '700',
@@ -1213,6 +997,18 @@ const styles = {
     display: 'inline-block',
     width: 'fit-content',
   },
+  reopenedTag: {
+    fontSize: '9px',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    color: '#12100d',
+    background: 'var(--accent-mustard)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '1px 5px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    width: 'fit-content',
+  },
   cardFooter: {
     display: 'flex',
     alignItems: 'center',
@@ -1240,268 +1036,35 @@ const styles = {
     padding: '100px 0',
     color: 'var(--text-muted)',
   },
-
-  // Modals
-  modalHeader: {
+  bulkActionBar: {
+    position: 'sticky',
+    bottom: 0,
     display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    borderBottom: '2px solid var(--glass-border)',
-    paddingBottom: '16px',
-    marginBottom: '20px',
+    alignItems: 'center',
+    gap: '10px',
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '12px 16px',
+    marginTop: '12px',
+    boxShadow: '0 -4px 12px rgba(0,0,0,0.15)',
+    flexWrap: 'wrap',
   },
-  modalTitle: {
-    fontSize: '20px',
+  bulkCount: {
+    fontSize: '13px',
     fontWeight: '700',
     color: 'var(--text-strong)',
-    fontFamily: 'var(--font-display)',
   },
-  modalSubheading: {
-    fontSize: '12px',
-    color: 'var(--primary-neon)',
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  closeBtn: {
-    background: 'none',
-    border: 'none',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-  },
-  modalForm: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px',
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-  },
-  modalLabel: {
-    fontSize: '13px',
-    fontWeight: '600',
-    color: 'var(--text-muted)',
-  },
-  modalInput: {
-    padding: '10px',
+  bulkSelect: {
+    padding: '8px 10px',
     background: 'var(--bg-tertiary)',
     border: '2px solid var(--glass-border)',
     borderRadius: 'var(--border-radius-sm)',
     color: 'var(--text-main)',
-    outline: 'none',
-    fontSize: '14px',
-  },
-  modalSelect: {
-    padding: '10px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--text-main)',
-    outline: 'none',
-    fontSize: '14px',
-  },
-  modalTextarea: {
-    padding: '10px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--text-main)',
-    outline: 'none',
-    resize: 'vertical',
-    fontSize: '14px',
-  },
-  screenshotDropZone: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    padding: '12px',
-    background: 'var(--bg-tertiary)',
-    border: '2px dashed var(--primary-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    outline: 'none',
-  },
-  screenshotDropHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    color: 'var(--text-muted)',
-    fontSize: '13px',
-    fontWeight: '600',
-  },
-  fileInput: {
-    color: 'var(--text-muted)',
     fontSize: '13px',
   },
-  pasteHint: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    color: 'var(--text-subtle)',
+  bulkApplyBtn: {
     fontSize: '12px',
+    padding: '8px 12px',
   },
-  screenshotPreviewWrap: {
-    display: 'flex',
-    gap: '12px',
-    alignItems: 'center',
-    padding: '10px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-  },
-  screenshotPreview: {
-    width: '92px',
-    height: '60px',
-    objectFit: 'cover',
-    borderRadius: 'var(--border-radius-sm)',
-    border: '2px solid var(--glass-border)',
-  },
-  screenshotPreviewMeta: {
-    flex: 1,
-    minWidth: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '10px',
-    color: 'var(--text-muted)',
-    fontSize: '12px',
-  },
-  clearScreenshotBtn: {
-    padding: '4px 8px',
-    fontSize: '11px',
-  },
-  row: {
-    display: 'flex',
-    gap: '16px',
-  },
-  checkboxGroup: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  checkbox: {
-    width: '16px',
-    height: '16px',
-    accentColor: 'var(--primary-neon)',
-    cursor: 'pointer',
-  },
-  checkboxLabel: {
-    fontSize: '14px',
-    color: 'var(--text-main)',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  modalActions: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: '10px',
-    marginTop: '10px',
-  },
-
-  // Bug details modal styles
-  modalBody: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px',
-  },
-  detailSection: {
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  detailTitle: {
-    fontSize: '14px',
-    fontWeight: '700',
-    color: 'var(--text-strong)',
-    marginBottom: '10px',
-    display: 'flex',
-    alignItems: 'center',
-    fontFamily: 'var(--font-display)',
-  },
-  detailDescText: {
-    fontSize: '14px',
-    color: 'var(--text-muted)',
-    lineHeight: '1.6',
-    background: 'var(--bg-tertiary)',
-    padding: '12px',
-    borderRadius: 'var(--border-radius-sm)',
-    border: '2px solid var(--glass-border)',
-    whiteSpace: 'pre-wrap',
-  },
-  screenshotLink: {
-    display: 'block',
-  },
-  detailScreenshot: {
-    width: '100%',
-    maxHeight: '320px',
-    objectFit: 'contain',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-  },
-  metaRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    color: 'var(--text-subtle)',
-    borderBottom: '2px solid var(--glass-border)',
-    paddingBottom: '12px',
-  },
-  commentForm: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    marginBottom: '16px',
-  },
-  commentInput: {
-    padding: '10px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--text-main)',
-    outline: 'none',
-    fontSize: '14px',
-    resize: 'none',
-  },
-  postBtn: {
-    alignSelf: 'flex-end',
-    padding: '6px 14px',
-    fontSize: '13px',
-  },
-  commentsList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    maxHeight: '200px',
-    overflowY: 'auto',
-    borderTop: '2px solid var(--glass-border)',
-    paddingTop: '16px',
-  },
-  noComments: {
-    color: 'var(--text-subtle)',
-    fontSize: '13px',
-    textAlign: 'center',
-    padding: '10px 0',
-  },
-  commentRow: {
-    background: 'var(--bg-tertiary)',
-    padding: '10px 12px',
-    borderRadius: 'var(--border-radius-sm)',
-    border: '2px solid var(--glass-border)',
-  },
-  commentMeta: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    marginBottom: '4px',
-  },
-  commentTime: {
-    color: 'var(--text-subtle)',
-  },
-  commentText: {
-    fontSize: '13px',
-    color: 'var(--text-muted)',
-    lineHeight: '1.4',
-  }
 };
