@@ -23,7 +23,7 @@ load_dotenv()
 from backend.database import engine, Base, get_db, SessionLocal
 from backend.models import (
     User, Project, Version, Component, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
-    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, SavedBugFilter
+    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, BugComponent, SavedBugFilter
 )
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
@@ -98,8 +98,26 @@ def ensure_sqlite_schema():
             connection.execute(text("ALTER TABLE bugs ADD COLUMN environment_details TEXT"))
         if "reopen_count" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN reopen_count INTEGER DEFAULT 0"))
-        if "component_id" not in bug_columns:
-            connection.execute(text("ALTER TABLE bugs ADD COLUMN component_id INTEGER"))
+
+        # Legacy single-valued bugs.component_id -> many-to-many bug_components migration.
+        # bug_components already exists here since Base.metadata.create_all() runs before
+        # this function. NOT EXISTS guard keeps the backfill idempotent even if DROP COLUMN
+        # below can't run (older SQLite).
+        if "component_id" in bug_columns:
+            connection.execute(text("""
+                INSERT INTO bug_components (bug_id, component_id)
+                SELECT b.id, b.component_id
+                FROM bugs b
+                WHERE b.component_id IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM bug_components bc
+                    WHERE bc.bug_id = b.id AND bc.component_id = b.component_id
+                )
+            """))
+            try:
+                connection.execute(text("ALTER TABLE bugs DROP COLUMN component_id"))
+            except Exception:
+                pass  # SQLite < 3.35 can't drop columns; the leftover column is inert since the model no longer references it
 
         attachment_columns = {
             row[1]
@@ -153,6 +171,8 @@ def ensure_sqlite_schema():
         }
         if "vendor" not in project_columns:
             connection.execute(text("ALTER TABLE projects ADD COLUMN vendor VARCHAR"))
+        if "pm_lead_id" not in project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN pm_lead_id INTEGER"))
 
         document_columns = {
             row[1]
@@ -160,6 +180,13 @@ def ensure_sqlite_schema():
         }
         if "version_id" not in document_columns:
             connection.execute(text("ALTER TABLE project_documents ADD COLUMN version_id INTEGER"))
+
+        activity_log_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(activity_logs)")).fetchall()
+        }
+        if "field_name" not in activity_log_columns:
+            connection.execute(text("ALTER TABLE activity_logs ADD COLUMN field_name VARCHAR"))
 
         # Migrate legacy "Member" role to the new "QA" role
         connection.execute(text("UPDATE users SET role = 'QA' WHERE role = 'Member'"))
@@ -593,6 +620,8 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(requi
 
     lead_id = project_in.lead_id or current_user.id
     require_active_user(db, lead_id, detail="Project lead not found")
+    if project_in.pm_lead_id is not None:
+        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found")
 
     new_project = Project(
         name=project_in.name,
@@ -600,13 +629,16 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(requi
         description=project_in.description,
         status=project_in.status,
         vendor=project_in.vendor,
-        lead_id=lead_id
+        lead_id=lead_id,
+        pm_lead_id=project_in.pm_lead_id
     )
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
 
     ensure_project_membership(db, new_project.id, lead_id)
+    if project_in.pm_lead_id is not None:
+        ensure_project_membership(db, new_project.id, project_in.pm_lead_id)
 
     # Log activity
     log = ActivityLog(
@@ -667,13 +699,18 @@ def update_project(project_id: int, project_in: ProjectUpdate, background_tasks:
     if project_in.lead_id is not None:
         require_active_user(db, project_in.lead_id, detail="Project lead not found")
         project.lead_id = project_in.lead_id
+    if project_in.pm_lead_id is not None:
+        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found")
+        project.pm_lead_id = project_in.pm_lead_id
 
     db.commit()
     db.refresh(project)
 
     if project_in.lead_id is not None:
         ensure_project_membership(db, project.id, project.lead_id)
-    
+    if project_in.pm_lead_id is not None:
+        ensure_project_membership(db, project.id, project.pm_lead_id)
+
     # Log status change if applicable
     if project_in.status is not None and old_status != project.status:
         log = ActivityLog(
@@ -902,8 +939,8 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
     project = require_project(db, bug_in.project_id)
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug_in.project_id)
-    if bug_in.component_id is not None:
-        require_component_for_project(db, bug_in.component_id, bug_in.project_id)
+    for component_id in bug_in.component_ids:
+        require_component_for_project(db, component_id, bug_in.project_id)
     if bug_in.owner_id is not None:
         require_active_user(db, bug_in.owner_id, detail="Bug owner not found")
     _check_dev_status_allowed(current_user, bug_in.status)
@@ -918,7 +955,6 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
         project_id=bug_in.project_id,
         project_sequence=next_sequence,
         version_id=bug_in.version_id,
-        component_id=bug_in.component_id,
         title=bug_in.title,
         description=bug_in.description,
         expected_behavior=bug_in.expected_behavior,
@@ -935,6 +971,11 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
     db.add(new_bug)
     db.commit()
     db.refresh(new_bug)
+
+    for component_id in bug_in.component_ids:
+        db.add(BugComponent(bug_id=new_bug.id, component_id=component_id))
+    if bug_in.component_ids:
+        db.commit()
 
     # Reporter (and owner, if different) auto-watch their own bug
     _add_watcher(db, new_bug.id, current_user.id)
@@ -1002,6 +1043,12 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
     old_owner_id = bug.owner_id
     old_is_blocker = bug.is_blocker
 
+    TRACKED_FIELDS = ["title", "description", "expected_behavior", "environment", "environment_details", "severity", "priority", "bug_type", "is_blocker"]
+    before_snapshot = {field: getattr(bug, field) for field in TRACKED_FIELDS}
+    before_version_id = bug.version_id
+    before_owner_id = bug.owner_id
+    before_component_ids = sorted(c.id for c in bug.components)
+
     _check_dev_can_edit_bug(current_user, bug_in)
 
     # Apply updates
@@ -1037,13 +1084,12 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug.project_id)
         bug.version_id = bug_in.version_id
-    if bug_in.component_id is not None:
-        # Note: can pass -1 to unassign
-        if bug_in.component_id == -1:
-            bug.component_id = None
-        else:
-            require_component_for_project(db, bug_in.component_id, bug.project_id)
-            bug.component_id = bug_in.component_id
+    if bug_in.component_ids is not None:
+        for component_id in bug_in.component_ids:
+            require_component_for_project(db, component_id, bug.project_id)
+        db.query(BugComponent).filter(BugComponent.bug_id == bug.id).delete(synchronize_session=False)
+        for component_id in bug_in.component_ids:
+            db.add(BugComponent(bug_id=bug.id, component_id=component_id))
     if bug_in.owner_id is not None:
         # Note: can pass -1 to unassign
         if bug_in.owner_id == -1:
@@ -1116,7 +1162,59 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
             exclude_user_id=current_user.id,
         )
 
+    # Field-level edit history (status changes are logged separately above)
+    field_changes = []
+    for field in TRACKED_FIELDS:
+        new_val = getattr(bug, field)
+        old_val = before_snapshot[field]
+        if old_val != new_val:
+            field_changes.append((field, old_val, new_val))
+
+    if bug.version_id != before_version_id:
+        old_v = db.query(Version).filter(Version.id == before_version_id).first() if before_version_id else None
+        new_v = db.query(Version).filter(Version.id == bug.version_id).first() if bug.version_id else None
+        field_changes.append(("version", old_v.version_name if old_v else "None", new_v.version_name if new_v else "None"))
+
+    if bug.owner_id != before_owner_id:
+        old_u = db.query(User).filter(User.id == before_owner_id).first() if before_owner_id else None
+        new_u = db.query(User).filter(User.id == bug.owner_id).first() if bug.owner_id else None
+        field_changes.append(("owner", old_u.full_name if old_u else "Unassigned", new_u.full_name if new_u else "Unassigned"))
+
+    new_component_ids = sorted(c.id for c in bug.components)
+    if new_component_ids != before_component_ids:
+        old_names = sorted(c.name for c in db.query(Component).filter(Component.id.in_(before_component_ids)).all()) if before_component_ids else []
+        new_names = sorted(c.name for c in bug.components)
+        field_changes.append(("components", ", ".join(old_names) or "None", ", ".join(new_names) or "None"))
+
+    if field_changes:
+        for field_name, old_val, new_val in field_changes:
+            db.add(ActivityLog(
+                user_id=current_user.id,
+                bug_id=bug.id,
+                project_id=bug.project_id,
+                activity_type="bug_field_updated",
+                field_name=field_name,
+                old_value=str(old_val) if old_val is not None else None,
+                new_value=str(new_val) if new_val is not None else None,
+            ))
+        db.commit()
+
     return bug
+
+@app.get("/api/bugs/{bug_id}/activity", response_model=List[ActivityLogOut])
+def get_bug_activity(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+    visible_ids = _visible_project_ids(db, current_user)
+    if visible_ids is not None and bug.project_id not in visible_ids:
+        raise HTTPException(status_code=404, detail="Bug not found")
+    return (
+        db.query(ActivityLog)
+        .filter(ActivityLog.bug_id == bug_id)
+        .order_by(ActivityLog.created_at.desc())
+        .all()
+    )
 
 BUG_BULK_UPDATE_ALLOWED_FIELDS = {"status", "owner_id"}
 
@@ -1473,6 +1571,21 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
             background_tasks=background_tasks,
             exclude_user_id=current_user.id,
         )
+
+        project = db.query(Project).filter(Project.id == comment_in.project_id).first()
+        mentioned_ids = set(comment_in.mentioned_user_ids) - {current_user.id}
+        for recipient_id in mentioned_ids:
+            notify(
+                db,
+                recipient_id,
+                notif_type="comment_mention",
+                title=f"{current_user.full_name} mentioned you on {project.name}",
+                body=f"{current_user.full_name}: {snippet}",
+                link="#projects",
+                project_id=comment_in.project_id,
+                background_tasks=background_tasks,
+                email=True,
+            )
 
     return new_comment
 

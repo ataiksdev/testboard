@@ -7,6 +7,7 @@ import {
 import { canManageBugs, canEditBugFields } from '../utils/roles';
 import { BugCreateModal } from './BugCreateModal';
 import { BugDetailModal } from './BugDetailModal';
+import { useToast } from './Toast';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const DEV_ALLOWED_BUG_STATUSES = ["Open", "In Progress", "Resolved"];
@@ -57,6 +58,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [bugProjId, setBugProjId] = useState(selectedProject ? selectedProject.id : '');
 
   const { token, API_URL, user } = useAuth();
+  const { showSuccess, showError } = useToast();
   const canEdit = canManageBugs(user.role);
   const isDev = user.role === 'Dev';
   const bugStatusOptions = isDev ? DEV_ALLOWED_BUG_STATUSES : BUG_STATUSES;
@@ -182,7 +184,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       const updatedBug = await response.json();
       setBugs(prev => prev.map(b => b.id === bugId ? updatedBug : b));
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -246,8 +248,9 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       setNewFilterShared(false);
       setShowSaveForm(false);
       fetchSavedFilters();
+      showSuccess("Filter saved.");
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -295,13 +298,18 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       fetchBugs();
       clearSelection();
       if (result.failed && result.failed.length > 0) {
-        alert(`${result.updated.length} bug(s) updated. ${result.failed.length} could not be updated:\n` +
-          result.failed.map(f => `#${f.bug_id}: ${f.reason}`).join('\n'));
+        showError(`${result.updated.length} bug(s) updated. ${result.failed.length} could not be updated: ` +
+          result.failed.map(f => `#${f.bug_id}: ${f.reason}`).join('; '));
+      } else {
+        showSuccess(`${result.updated.length} bug(s) updated.`);
       }
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
+
+  const filterProject = projects.find(p => String(p.id) === String(filterProjectId));
+  const boardTitle = filterProject ? `${filterProject.name} Defect Tracker` : 'All Projects Defect Tracker';
 
   // Apply version, search, and metadata filters on top of the project-scoped fetch
   const filteredBugs = bugs.filter(b => {
@@ -311,7 +319,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     if (filterPriority && b.priority !== filterPriority) return false;
     if (filterType && b.bug_type !== filterType) return false;
     if (filterOwnerId && String(b.owner_id || '') !== filterOwnerId) return false;
-    if (filterComponentId && String(b.component_id || '') !== filterComponentId) return false;
+    if (filterComponentId && !(b.components || []).some(c => String(c.id) === filterComponentId)) return false;
     if (filterLabel.trim() && !(b.labels || []).some(l => l.toLowerCase().includes(filterLabel.trim().toLowerCase()))) return false;
     return true;
   });
@@ -325,7 +333,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
         <div style={styles.header}>
           <div style={styles.headerTitleSec}>
             <BugIcon size={24} color="var(--header-banner-icon)" />
-            <h2 style={styles.title}>Bugs Kanban Board</h2>
+            <h2 style={styles.title}>{boardTitle}</h2>
           </div>
           {canEdit && (
             <button

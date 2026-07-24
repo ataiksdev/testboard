@@ -66,6 +66,7 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     lead_id: Optional[int] = None
+    pm_lead_id: Optional[int] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -74,11 +75,14 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = None
     vendor: Optional[str] = None
     lead_id: Optional[int] = None
+    pm_lead_id: Optional[int] = None
 
 class ProjectOut(ProjectBase):
     id: int
     lead_id: Optional[int] = None
     lead: Optional[UserOut] = None
+    pm_lead_id: Optional[int] = None
+    pm_lead: Optional[UserOut] = None
     created_at: datetime
 
     class Config:
@@ -246,11 +250,10 @@ class BugBase(BaseModel):
     is_blocker: bool = False
     project_id: int
     version_id: Optional[int] = None
-    component_id: Optional[int] = None
     owner_id: Optional[int] = None
 
 class BugCreate(BugBase):
-    pass
+    component_ids: List[int] = []
 
 class BugUpdate(BaseModel):
     title: Optional[str] = None
@@ -264,7 +267,7 @@ class BugUpdate(BaseModel):
     bug_type: Optional[str] = None
     is_blocker: Optional[bool] = None
     version_id: Optional[int] = None
-    component_id: Optional[int] = None
+    component_ids: Optional[List[int]] = None
     owner_id: Optional[int] = None
 
 class BugOut(BugBase):
@@ -273,7 +276,7 @@ class BugOut(BugBase):
     project: Optional[ProjectOut] = None
     reopen_count: int = 0
     attachments: List[BugAttachmentOut] = []
-    component: Optional[ComponentOut] = None
+    components: List[ComponentOut] = []
     labels: List[str] = []
     reporter_id: int
     reporter: UserOut
@@ -351,6 +354,7 @@ class ActivityLogOut(BaseModel):
     bug_id: Optional[int] = None
     bug_title: Optional[str] = None
     activity_type: str
+    field_name: Optional[str] = None
     old_value: Optional[str] = None
     new_value: Optional[str] = None
     created_at: datetime

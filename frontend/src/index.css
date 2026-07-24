@@ -278,6 +278,15 @@ h1, h2, h3, h4, .btn-primary, .btn-secondary, .btn-danger {
   border-color: var(--primary-accent);
 }
 
+/* Native <select> popups don't reliably inherit a parent's (sometimes
+   translucent/banner-tuned) color, so option contrast can break across
+   theme switches. Force a solid, theme-correct background/text pairing
+   for the opened dropdown list regardless of the select's own styling. */
+select option {
+  background: var(--bg-tertiary);
+  color: var(--text-main);
+}
+
 .btn-danger {
   background: var(--danger-bg);
   color: var(--danger-text);

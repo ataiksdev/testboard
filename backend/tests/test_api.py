@@ -1194,28 +1194,52 @@ def test_component_crud_and_bug_assignment():
     assert resp.status_code == 200
     names = {c["name"] for c in resp.json()}
     assert names == {"Checkout", "Auth"}
+    auth_component = next(c for c in resp.json() if c["name"] == "Auth")
 
-    # Assign on create
+    # Assign a single component on create
     bug = client.post("/api/bugs", json={
         "title": "Checkout bug",
         "project_id": project_a["id"],
-        "component_id": component["id"]
+        "component_ids": [component["id"]]
     }, headers=admin_headers).json()
-    assert bug["component"]["name"] == "Checkout"
+    assert [c["name"] for c in bug["components"]] == ["Checkout"]
+
+    # Assign multiple components on create
+    multi_bug = client.post("/api/bugs", json={
+        "title": "Multi-feature bug",
+        "project_id": project_a["id"],
+        "component_ids": [component["id"], auth_component["id"]]
+    }, headers=admin_headers).json()
+    assert {c["name"] for c in multi_bug["components"]} == {"Checkout", "Auth"}
 
     # Assign on update
     bug2 = client.post("/api/bugs", json={"title": "No component yet", "project_id": project_a["id"]}, headers=admin_headers).json()
-    assert bug2["component"] is None
-    resp = client.put(f"/api/bugs/{bug2['id']}", json={"component_id": component["id"]}, headers=admin_headers)
+    assert bug2["components"] == []
+    resp = client.put(f"/api/bugs/{bug2['id']}", json={"component_ids": [component["id"]]}, headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json()["component"]["name"] == "Checkout"
+    assert [c["name"] for c in resp.json()["components"]] == ["Checkout"]
+
+    # Replacing with a different set on update
+    resp = client.put(f"/api/bugs/{bug2['id']}", json={"component_ids": [auth_component["id"]]}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert [c["name"] for c in resp.json()["components"]] == ["Auth"]
+
+    # Clearing via an explicit empty list
+    resp = client.put(f"/api/bugs/{bug2['id']}", json={"component_ids": []}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["components"] == []
+
+    # Omitting component_ids on update leaves existing assignments untouched
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"severity": "High"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert [c["name"] for c in resp.json()["components"]] == ["Checkout"]
 
     # A component from a different project is rejected
     component_b = client.post(f"/api/projects/{project_b['id']}/components", json={"name": "OtherComp"}, headers=admin_headers).json()
     resp = client.post("/api/bugs", json={
         "title": "Cross-project component",
         "project_id": project_a["id"],
-        "component_id": component_b["id"]
+        "component_ids": [component_b["id"]]
     }, headers=admin_headers)
     assert resp.status_code == 404
 
@@ -1342,3 +1366,109 @@ def test_version_scoped_document_upload(tmp_path, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["version_id"] is None
+
+
+def test_project_pm_lead_field():
+    admin_headers = _make_admin()
+    pm_headers, pm_id = _make_user_with_role(admin_headers, "pmlead@test.com", "PM Lead Person", "PM")
+
+    project = client.post(
+        "/api/projects",
+        json={"name": "PM Lead Proj", "key": "PLP", "pm_lead_id": pm_id},
+        headers=admin_headers
+    ).json()
+    assert project["pm_lead_id"] == pm_id
+    assert project["pm_lead"]["full_name"] == "PM Lead Person"
+
+    # The PM lead is automatically added as a project member
+    resp = client.get(f"/api/projects/{project['id']}/members", headers=admin_headers)
+    assert any(m["user_id"] == pm_id for m in resp.json())
+
+    # Update to a different PM lead
+    pm_headers_2, pm_id_2 = _make_user_with_role(admin_headers, "pmlead2@test.com", "Second PM", "PM")
+    resp = client.put(f"/api/projects/{project['id']}", json={"pm_lead_id": pm_id_2}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["pm_lead"]["full_name"] == "Second PM"
+
+    # A project created without a pm_lead_id defaults to null (no auto-assign, unlike QA lead)
+    project_b = client.post("/api/projects", json={"name": "No PM Lead Proj", "key": "NPLP"}, headers=admin_headers).json()
+    assert project_b["pm_lead_id"] is None
+
+    # Nonexistent pm_lead_id is rejected
+    resp = client.post(
+        "/api/projects",
+        json={"name": "Bad PM Lead Proj", "key": "BPLP", "pm_lead_id": 999999},
+        headers=admin_headers
+    )
+    assert resp.status_code == 404
+
+
+def test_bug_field_edit_history(fake_smtp):
+    admin_headers = _make_admin()
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "historydev@test.com", "History Dev", "Dev")
+    project = client.post("/api/projects", json={"name": "History Proj", "key": "HSP"}, headers=admin_headers).json()
+    version = client.post(f"/api/projects/{project['id']}/versions", json={"version_name": "v1.0"}, headers=admin_headers).json()
+    component = client.post(f"/api/projects/{project['id']}/components", json={"name": "Checkout"}, headers=admin_headers).json()
+    bug = client.post("/api/bugs", json={
+        "title": "Original title",
+        "project_id": project["id"],
+        "severity": "Low"
+    }, headers=admin_headers).json()
+
+    # Only the creation entry exists so far, no field-edit entries yet
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    assert resp.status_code == 200
+    assert [e for e in resp.json() if e["activity_type"] == "bug_field_updated"] == []
+
+    # Edit several fields in one PUT
+    resp = client.put(f"/api/bugs/{bug['id']}", json={
+        "title": "Updated title",
+        "severity": "Critical",
+        "owner_id": dev_id,
+        "version_id": version["id"],
+        "component_ids": [component["id"]]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    assert resp.status_code == 200
+    entries = resp.json()
+    by_field = {e["field_name"]: e for e in entries if e["activity_type"] == "bug_field_updated"}
+
+    assert by_field["title"]["old_value"] == "Original title"
+    assert by_field["title"]["new_value"] == "Updated title"
+    assert by_field["severity"]["old_value"] == "Low"
+    assert by_field["severity"]["new_value"] == "Critical"
+    assert by_field["owner"]["old_value"] == "Admin"
+    assert by_field["owner"]["new_value"] == "History Dev"
+    assert by_field["version"]["new_value"] == "v1.0"
+    assert by_field["components"]["new_value"] == "Checkout"
+    assert all(e["user"]["email"] == "admin@test.com" for e in entries)
+
+    # Re-saving identical values produces no new entries
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"title": "Updated title"}, headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    assert len(resp.json()) == len(entries)
+
+    # Status changes still use their own dedicated activity_type, not bug_field_updated
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "In Progress"}, headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    assert any(e["activity_type"] == "bug_status_change" for e in resp.json())
+
+
+def test_project_comment_mentions(fake_smtp):
+    admin_headers = _make_admin()
+    mentioned_headers, mentioned_id = _make_user_with_role(admin_headers, "projmention@test.com", "Proj Mentioned", "QA")
+    project = client.post("/api/projects", json={"name": "Mention Proj Comments", "key": "MPC"}, headers=admin_headers).json()
+
+    resp = client.post("/api/comments", json={
+        "project_id": project["id"],
+        "text": "Hey @Proj Mentioned can you check this?",
+        "mentioned_user_ids": [mentioned_id]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications", headers=mentioned_headers)
+    assert any(n["type"] == "comment_mention" for n in resp.json())

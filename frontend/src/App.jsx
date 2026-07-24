@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './utils/auth';
+import { ToastProvider } from './components/Toast';
 import { AuthPages } from './components/AuthPages';
 import { ProjectTracker } from './components/ProjectTracker';
 import { BugTracker } from './components/BugTracker';
@@ -198,9 +199,11 @@ const AppContent = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ToastProvider>
   );
 }
 

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
-  MessageSquare, X, Eye, ImagePlus, Clipboard, Link as LinkIcon, RotateCcw, Tags
+  MessageSquare, X, Eye, ImagePlus, Clipboard, Link as LinkIcon, RotateCcw, Tags, ChevronDown, History as HistoryIcon
 } from 'lucide-react';
+import { useToast } from './Toast';
 
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
 const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
@@ -16,6 +17,21 @@ const LINK_TYPE_LABELS = {
   relates_to: { outgoing: 'Relates to', incoming: 'Related from' },
   blocks: { outgoing: 'Blocks', incoming: 'Blocked by' },
   duplicate_of: { outgoing: 'Duplicate of', incoming: 'Duplicated by' },
+};
+
+const ACTIVITY_FIELD_LABELS = {
+  title: 'title',
+  description: 'description',
+  expected_behavior: 'expected behavior',
+  environment: 'environment',
+  environment_details: 'environment details',
+  severity: 'severity',
+  priority: 'priority',
+  bug_type: 'type',
+  is_blocker: 'blocker flag',
+  version: 'target version',
+  owner: 'owner',
+  components: 'components',
 };
 
 const readImageFile = (file, onLoaded) => {
@@ -68,13 +84,18 @@ export const BugDetailModal = ({
   const [labels, setLabels] = useState([]);
   const [labelSuggestions, setLabelSuggestions] = useState([]);
   const [newLabelInput, setNewLabelInput] = useState('');
+  const [showComponentDropdown, setShowComponentDropdown] = useState(false);
   const [showLabelSuggestions, setShowLabelSuggestions] = useState(false);
+  const [activityTab, setActivityTab] = useState('comments'); // 'comments' | 'history'
+  const [activityHistory, setActivityHistory] = useState([]);
 
+  const { showError } = useToast();
   const authHeaders = { 'Authorization': `Bearer ${token}` };
   const jsonHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
 
   useEffect(() => {
     setAttachments(bug.attachments || []);
+    setActivityTab('comments');
     fetchComments();
     fetchLinks();
     fetchWatchers();
@@ -82,6 +103,7 @@ export const BugDetailModal = ({
     fetchProjectBugs();
     fetchLabels();
     fetchLabelSuggestions();
+    fetchActivityHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bug.id]);
 
@@ -134,6 +156,13 @@ export const BugDetailModal = ({
     } catch (err) { console.error(err); }
   };
 
+  const fetchActivityHistory = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/bugs/${bug.id}/activity`, { headers: authHeaders });
+      if (res.ok) setActivityHistory(await res.json());
+    } catch (err) { console.error(err); }
+  };
+
   const handleFieldUpdate = async (fields) => {
     try {
       const res = await fetch(`${API_URL}/api/bugs/${bug.id}`, {
@@ -141,10 +170,26 @@ export const BugDetailModal = ({
       });
       if (!res.ok) throw new Error("Failed to update bug");
       onUpdated(await res.json());
+      fetchActivityHistory();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
+
+  const projectComponents = (components || []).filter(c => c.project_id === bug.project_id);
+  const selectedComponentIds = (bug.components || []).map(c => c.id);
+  const toggleComponent = (id) => {
+    const newIds = selectedComponentIds.includes(id)
+      ? selectedComponentIds.filter(x => x !== id)
+      : [...selectedComponentIds, id];
+    handleFieldUpdate({ component_ids: newIds });
+  };
+  const selectedComponentNames = (bug.components || []).map(c => c.name);
+  const componentButtonLabel = selectedComponentNames.length === 0
+    ? 'None'
+    : selectedComponentNames.length <= 2
+      ? selectedComponentNames.join(', ')
+      : `${selectedComponentNames.slice(0, 2).join(', ')} +${selectedComponentNames.length - 2} more`;
 
   const getFileUrl = (url) => url.startsWith('http') ? url : `${API_URL}${url}`;
 
@@ -170,7 +215,7 @@ export const BugDetailModal = ({
       if (!res.ok) throw new Error("Failed to delete attachment");
       setAttachments(prev => prev.filter(a => a.id !== attachmentId));
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -233,7 +278,7 @@ export const BugDetailModal = ({
       setCommentAttachment(null);
       fetchComments();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -248,7 +293,7 @@ export const BugDetailModal = ({
       }
       fetchWatchers();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -264,7 +309,7 @@ export const BugDetailModal = ({
       setLinkSearch('');
       fetchLinks();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -274,7 +319,7 @@ export const BugDetailModal = ({
       if (!res.ok) throw new Error("Failed to remove link");
       fetchLinks();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -296,7 +341,7 @@ export const BugDetailModal = ({
       fetchLabels();
       fetchLabelSuggestions();
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -313,7 +358,7 @@ export const BugDetailModal = ({
       if (!res.ok) throw new Error("Failed to remove label");
       setLabels(prev => prev.filter(l => l.id !== labelId));
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -325,6 +370,30 @@ export const BugDetailModal = ({
         !labels.some(l => l.name === s)
       )
     : [];
+
+  const formatActivityEntry = (entry) => {
+    const who = entry.user.full_name;
+    switch (entry.activity_type) {
+      case 'bug_created':
+        return `${who} created this bug`;
+      case 'bug_status_change':
+        return `${who} changed status from ${entry.old_value} to ${entry.new_value}`;
+      case 'bug_resolved':
+        return `${who} resolved this bug (${entry.old_value} → ${entry.new_value})`;
+      case 'bug_reopened':
+        return `${who} reopened this bug (${entry.old_value} → ${entry.new_value})`;
+      case 'comment_added':
+        return `${who} added a comment: "${entry.new_value}"`;
+      case 'bug_field_updated': {
+        const label = ACTIVITY_FIELD_LABELS[entry.field_name] || entry.field_name;
+        const oldVal = entry.old_value ?? 'None';
+        const newVal = entry.new_value ?? 'None';
+        return `${who} changed ${label} from "${oldVal}" to "${newVal}"`;
+      }
+      default:
+        return `${who} ${entry.activity_type.replace(/_/g, ' ')}`;
+    }
+  };
 
   return (
     <div className="modal-overlay">
@@ -340,7 +409,17 @@ export const BugDetailModal = ({
                 </span>
               )}
             </span>
-            <h3 style={styles.modalTitle}>{bug.title}</h3>
+            <input
+              type="text"
+              defaultValue={bug.title}
+              disabled={!canEditFields}
+              onBlur={(e) => {
+                const trimmed = e.target.value.trim();
+                if (trimmed && trimmed !== bug.title) handleFieldUpdate({ title: trimmed });
+                else e.target.value = bug.title;
+              }}
+              style={{ ...styles.titleInput, opacity: canEditFields ? 1 : 0.7 }}
+            />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button type="button" onClick={toggleWatch} style={styles.watchBtn} title={isWatching ? 'Unwatch this bug' : 'Watch this bug'}>
@@ -356,12 +435,26 @@ export const BugDetailModal = ({
         <div style={styles.modalBody}>
           <div style={styles.detailSection}>
             <h4 style={styles.detailTitle}>Steps to Reproduce / Description</h4>
-            <p style={styles.detailDescText}>{bug.description || "No description provided."}</p>
+            <textarea
+              defaultValue={bug.description || ''}
+              disabled={!canEditFields}
+              onBlur={(e) => { if (e.target.value !== (bug.description || '')) handleFieldUpdate({ description: e.target.value }); }}
+              placeholder="No description provided."
+              rows={3}
+              style={{ ...styles.detailDescTextarea, opacity: canEditFields ? 1 : 0.7 }}
+            />
           </div>
 
           <div style={styles.detailSection}>
             <h4 style={styles.detailTitle}>Expectations</h4>
-            <p style={styles.detailDescText}>{bug.expected_behavior || "No expectations noted."}</p>
+            <textarea
+              defaultValue={bug.expected_behavior || ''}
+              disabled={!canEditFields}
+              onBlur={(e) => { if (e.target.value !== (bug.expected_behavior || '')) handleFieldUpdate({ expected_behavior: e.target.value }); }}
+              placeholder="No expectations noted."
+              rows={2}
+              style={{ ...styles.detailDescTextarea, opacity: canEditFields ? 1 : 0.7 }}
+            />
           </div>
 
           <div style={styles.row}>
@@ -409,19 +502,36 @@ export const BugDetailModal = ({
                 {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
-            <div style={{ ...styles.inputGroup, flex: 1 }}>
-              <label style={styles.modalLabel}>Component</label>
-              <select
-                value={bug.component_id || ''}
+            <div style={{ ...styles.inputGroup, flex: 1, position: 'relative' }}>
+              <label style={styles.modalLabel}>Features</label>
+              <button
+                type="button"
                 disabled={!canEditFields}
-                onChange={(e) => handleFieldUpdate({ component_id: e.target.value ? parseInt(e.target.value) : -1 })}
-                style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
+                onClick={() => setShowComponentDropdown(v => !v)}
+                onBlur={() => setTimeout(() => setShowComponentDropdown(false), 150)}
+                style={{ ...styles.componentDropdownToggle, opacity: canEditFields ? 1 : 0.7 }}
               >
-                <option value="">None</option>
-                {(components || []).filter(c => c.project_id === bug.project_id).map(c => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+                <span style={styles.componentDropdownToggleLabel}>{componentButtonLabel}</span>
+                <ChevronDown size={14} />
+              </button>
+              {showComponentDropdown && canEditFields && (
+                <div style={styles.componentDropdownPanel} onMouseDown={(e) => e.preventDefault()}>
+                  {projectComponents.length === 0 ? (
+                    <div style={styles.componentDropdownEmpty}>No features for this project yet.</div>
+                  ) : (
+                    projectComponents.map(c => (
+                      <label key={c.id} style={styles.componentDropdownItem}>
+                        <input
+                          type="checkbox"
+                          checked={selectedComponentIds.includes(c.id)}
+                          onChange={() => toggleComponent(c.id)}
+                        />
+                        {c.name}
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -617,11 +727,42 @@ export const BugDetailModal = ({
           </div>
 
           <div style={styles.detailSection}>
-            <h4 style={styles.detailTitle}>
-              <MessageSquare size={16} style={{ marginRight: '6px' }} />
-              Daily Bug Updates & Comments
-            </h4>
+            <div style={styles.activityTabRow}>
+              <button
+                type="button"
+                style={{ ...styles.activityTabBtn, ...(activityTab === 'comments' ? styles.activityTabBtnActive : {}) }}
+                onClick={() => setActivityTab('comments')}
+              >
+                <MessageSquare size={14} style={{ marginRight: '6px' }} />
+                Comments
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.activityTabBtn, ...(activityTab === 'history' ? styles.activityTabBtnActive : {}) }}
+                onClick={() => setActivityTab('history')}
+              >
+                <HistoryIcon size={14} style={{ marginRight: '6px' }} />
+                History
+              </button>
+            </div>
 
+            {activityTab === 'history' ? (
+              <div style={styles.historyList}>
+                {activityHistory.length === 0 ? (
+                  <p style={styles.noComments}>No history recorded yet.</p>
+                ) : (
+                  activityHistory.map(entry => (
+                    <div key={entry.id} style={styles.historyRow}>
+                      <span style={styles.historyText}>{formatActivityEntry(entry)}</span>
+                      <span style={styles.commentTime}>
+                        {new Date(entry.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : (
+            <>
             <form onSubmit={handlePostComment} style={styles.commentForm} onPaste={handleCommentAttachmentPaste}>
               <div style={{ position: 'relative' }}>
                 <textarea
@@ -700,6 +841,8 @@ export const BugDetailModal = ({
                 })
               )}
             </div>
+            </>
+            )}
           </div>
         </div>
       </div>
@@ -721,6 +864,19 @@ const styles = {
     fontWeight: '700',
     color: 'var(--text-strong)',
     fontFamily: 'var(--font-display)',
+  },
+  titleInput: {
+    fontSize: '20px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
+    background: 'transparent',
+    border: '2px solid transparent',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '2px 4px',
+    marginLeft: '-4px',
+    outline: 'none',
+    width: '100%',
   },
   modalSubheading: {
     fontSize: '12px',
@@ -779,15 +935,19 @@ const styles = {
     alignItems: 'center',
     fontFamily: 'var(--font-display)',
   },
-  detailDescText: {
+  detailDescTextarea: {
     fontSize: '14px',
-    color: 'var(--text-muted)',
+    color: 'var(--text-main)',
     lineHeight: '1.6',
     background: 'var(--bg-tertiary)',
     padding: '12px',
     borderRadius: 'var(--border-radius-sm)',
     border: '2px solid var(--glass-border)',
-    whiteSpace: 'pre-wrap',
+    outline: 'none',
+    resize: 'vertical',
+    fontFamily: 'inherit',
+    width: '100%',
+    boxSizing: 'border-box',
   },
   row: {
     display: 'flex',
@@ -820,6 +980,55 @@ const styles = {
     color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
+  },
+  componentDropdownToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '6px',
+    padding: '10px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
+    fontSize: '14px',
+    cursor: 'pointer',
+    width: '100%',
+    textAlign: 'left',
+  },
+  componentDropdownToggleLabel: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  componentDropdownPanel: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: '4px',
+    zIndex: 5,
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    maxHeight: '180px',
+    overflowY: 'auto',
+    padding: '4px',
+  },
+  componentDropdownItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '7px 8px',
+    fontSize: '13px',
+    color: 'var(--text-main)',
+    cursor: 'pointer',
+    borderRadius: 'var(--border-radius-sm)',
+  },
+  componentDropdownEmpty: {
+    padding: '10px 8px',
+    fontSize: '12px',
+    color: 'var(--text-subtle)',
   },
   checkboxGroup: {
     display: 'flex',
@@ -1136,6 +1345,52 @@ const styles = {
   },
   commentText: {
     fontSize: '13px',
+    color: 'var(--text-muted)',
+    lineHeight: '1.4',
+  },
+  activityTabRow: {
+    display: 'flex',
+    gap: '8px',
+    marginBottom: '14px',
+    borderBottom: '2px solid var(--glass-border)',
+  },
+  activityTabBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '8px 10px',
+    fontSize: '13px',
+    fontWeight: '700',
+    fontFamily: 'var(--font-display)',
+    color: 'var(--text-muted)',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+    marginBottom: '-2px',
+    cursor: 'pointer',
+  },
+  activityTabBtnActive: {
+    color: 'var(--primary-neon)',
+    borderBottom: '2px solid var(--primary-neon)',
+  },
+  historyList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    maxHeight: '260px',
+    overflowY: 'auto',
+    paddingTop: '4px',
+  },
+  historyRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '10px',
+    background: 'var(--bg-tertiary)',
+    padding: '10px 12px',
+    borderRadius: '4px',
+    fontSize: '13px',
+  },
+  historyText: {
     color: 'var(--text-muted)',
     lineHeight: '1.4',
   },

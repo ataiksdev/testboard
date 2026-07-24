@@ -16,6 +16,7 @@ class User(Base):
 
     # Relationships
     led_projects = relationship("Project", back_populates="lead", foreign_keys="Project.lead_id")
+    pm_led_projects = relationship("Project", back_populates="pm_lead", foreign_keys="Project.pm_lead_id")
     reported_bugs = relationship("Bug", back_populates="reporter", foreign_keys="Bug.reporter_id")
     assigned_bugs = relationship("Bug", back_populates="owner", foreign_keys="Bug.owner_id")
     comments = relationship("Comment", back_populates="user")
@@ -33,10 +34,12 @@ class Project(Base):
     status = Column(String, default="Intake")  # Intake, Reviewing, Testing, Blocked, Completed, Archived
     vendor = Column(String, nullable=True)  # Vendor/Developer details
     lead_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    pm_lead_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Relationships
     lead = relationship("User", back_populates="led_projects", foreign_keys=[lead_id])
+    pm_lead = relationship("User", back_populates="pm_led_projects", foreign_keys=[pm_lead_id])
     versions = relationship("Version", back_populates="project", cascade="all, delete-orphan")
     bugs = relationship("Bug", back_populates="project", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="project", cascade="all, delete-orphan")
@@ -69,7 +72,7 @@ class Component(Base):
 
     # Relationships
     project = relationship("Project", back_populates="components")
-    bugs = relationship("Bug", back_populates="component")
+    bug_links = relationship("BugComponent", back_populates="component")
 
 
 class Bug(Base):
@@ -79,7 +82,6 @@ class Bug(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     project_sequence = Column(Integer, nullable=True)
     version_id = Column(Integer, ForeignKey("versions.id"), nullable=True)
-    component_id = Column(Integer, ForeignKey("components.id"), nullable=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     expected_behavior = Column(Text, nullable=True)
@@ -100,17 +102,21 @@ class Bug(Base):
     # Relationships
     project = relationship("Project", back_populates="bugs")
     version = relationship("Version", back_populates="bugs")
-    component = relationship("Component", back_populates="bugs")
     owner = relationship("User", back_populates="assigned_bugs", foreign_keys=[owner_id])
     reporter = relationship("User", back_populates="reported_bugs", foreign_keys=[reporter_id])
     comments = relationship("Comment", back_populates="bug", cascade="all, delete-orphan")
     activities = relationship("ActivityLog", back_populates="bug", cascade="all, delete-orphan")
     attachments = relationship("BugAttachment", back_populates="bug", cascade="all, delete-orphan")
     label_entries = relationship("BugLabel", back_populates="bug", cascade="all, delete-orphan")
+    component_links = relationship("BugComponent", back_populates="bug", cascade="all, delete-orphan")
 
     @property
     def labels(self):
         return [l.name for l in self.label_entries]
+
+    @property
+    def components(self):
+        return [cl.component for cl in self.component_links]
 
 
 class Comment(Base):
@@ -193,6 +199,19 @@ class BugLabel(Base):
     created_by = relationship("User")
 
 
+class BugComponent(Base):
+    __tablename__ = "bug_components"
+    __table_args__ = (UniqueConstraint("bug_id", "component_id", name="uq_bug_component"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)
+    component_id = Column(Integer, ForeignKey("components.id"), nullable=False)
+
+    # Relationships
+    bug = relationship("Bug", back_populates="component_links")
+    component = relationship("Component", back_populates="bug_links")
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
@@ -200,7 +219,8 @@ class ActivityLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=True)
-    activity_type = Column(String, nullable=False)  # project_status_change, bug_status_change, bug_resolved, bug_created, project_created
+    activity_type = Column(String, nullable=False)  # project_status_change, bug_status_change, bug_resolved, bug_created, project_created, bug_field_updated
+    field_name = Column(String, nullable=True)  # which field changed, only set for bug_field_updated entries
     old_value = Column(String, nullable=True)
     new_value = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

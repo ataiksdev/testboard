@@ -1,20 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
-  FolderKanban, Plus, MessageSquare, User as UserIcon,
-  ChevronRight, X, Users, UserPlus, FileText, Download, Trash2, Upload,
-  Pencil, GitBranch, Tag as TagIcon
+  FolderKanban, Plus, User as UserIcon,
+  ChevronRight, X, Upload, Archive, ArchiveRestore
 } from 'lucide-react';
 import { canManageProjects, canManageMembers } from '../utils/roles';
+import { ProjectDetailView } from './ProjectDetailView';
+import { useToast } from './Toast';
 
 const PROJECT_STATUSES = ["Intake", "Reviewing", "Testing", "Blocked", "Completed", "Archived"];
-const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Other"];
+const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Addendum", "Other"];
 
-const formatFileSize = (bytes) => {
-  if (!bytes) return '';
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
+const deriveProjectKey = (name) => name.replace(/[^a-zA-Z]/g, '').slice(0, 4).toUpperCase();
 
 export const ProjectTracker = ({ onSelectProject }) => {
   const [projects, setProjects] = useState([]);
@@ -24,25 +21,19 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [draggedProjectId, setDraggedProjectId] = useState(null);
   const [dragOverStatus, setDragOverStatus] = useState(null);
-  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const [viewMode, setViewMode] = useState('board'); // 'board' | 'detail'
   const [activeProject, setActiveProject] = useState(null);
-  const [projectComments, setProjectComments] = useState([]);
-  const [newCommentText, setNewCommentText] = useState('');
-  const [projectMembers, setProjectMembers] = useState([]);
-  const [addMemberId, setAddMemberId] = useState('');
-  const [projectDocuments, setProjectDocuments] = useState([]);
-  const [docTitle, setDocTitle] = useState('');
-  const [docType, setDocType] = useState('BRD');
-  const [docFile, setDocFile] = useState(null);
-  const [uploadingDoc, setUploadingDoc] = useState(false);
-  const [projectVersions, setProjectVersions] = useState([]);
 
   // Create-project form fields
   const [projName, setProjName] = useState('');
   const [projKey, setProjKey] = useState('');
+  const [keyManuallyEdited, setKeyManuallyEdited] = useState(false);
   const [projDesc, setProjDesc] = useState('');
   const [projStatus, setProjStatus] = useState('Intake');
   const [projLead, setProjLead] = useState('');
+  const [projPmLead, setProjPmLead] = useState('');
   const [projVendor, setProjVendor] = useState('');
   const [creatingProject, setCreatingProject] = useState(false);
 
@@ -52,25 +43,12 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [newDocTitle, setNewDocTitle] = useState('');
   const [newDocType, setNewDocType] = useState('BRD');
 
-  // Add-version form (used from within the project detail modal)
-  const [newVersionName, setNewVersionName] = useState('');
-  const [newVersionComponent, setNewVersionComponent] = useState('');
-  const [newVersionChangelogFile, setNewVersionChangelogFile] = useState(null);
-  const [addingVersion, setAddingVersion] = useState(false);
-
-  // Project edit mode (within detail modal)
-  const [editMode, setEditMode] = useState(false);
-  const [editName, setEditName] = useState('');
-  const [editKey, setEditKey] = useState('');
-  const [editVendor, setEditVendor] = useState('');
-  const [editLeadId, setEditLeadId] = useState('');
-  const [editDescription, setEditDescription] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-
   const { token, API_URL, user } = useAuth();
+  const { showSuccess, showError } = useToast();
   const canEdit = canManageProjects(user.role);
   const canEditMembers = canManageMembers(user.role);
   const qaLeadOptions = users.filter(u => u.role === 'QA');
+  const pmLeadOptions = users.filter(u => u.role === 'PM');
 
   useEffect(() => {
     fetchData();
@@ -80,7 +58,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
     try {
       setLoading(true);
       const headers = { 'Authorization': `Bearer ${token}` };
-      
+
       const [projRes, bugRes, userRes] = await Promise.all([
         fetch(`${API_URL}/api/projects`, { headers }),
         fetch(`${API_URL}/api/bugs`, { headers }),
@@ -103,6 +81,13 @@ export const ProjectTracker = ({ onSelectProject }) => {
       if (qaUsers.length > 0) {
         setProjLead(qaUsers[0].id);
       }
+
+      // Keep an open detail view in sync with freshly fetched data
+      setActiveProject(prev => {
+        if (!prev) return prev;
+        const updated = projData.find(p => p.id === prev.id);
+        return updated || prev;
+      });
     } catch (err) {
       console.error(err);
     } finally {
@@ -113,9 +98,11 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const resetProjectForm = () => {
     setProjName('');
     setProjKey('');
+    setKeyManuallyEdited(false);
     setProjDesc('');
     setProjStatus('Intake');
     setProjVendor('');
+    setProjPmLead('');
     setStagedDocs([]);
     setNewDocFile(null);
     setNewDocTitle('');
@@ -173,7 +160,8 @@ export const ProjectTracker = ({ onSelectProject }) => {
           description: projDesc,
           status: projStatus,
           vendor: projVendor.trim() || null,
-          lead_id: projLead ? parseInt(projLead) : undefined
+          lead_id: projLead ? parseInt(projLead) : undefined,
+          pm_lead_id: projPmLead ? parseInt(projPmLead) : undefined
         })
       });
 
@@ -192,8 +180,9 @@ export const ProjectTracker = ({ onSelectProject }) => {
       resetProjectForm();
 
       fetchData();
+      showSuccess(`Project "${project.name}" created successfully.`);
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     } finally {
       setCreatingProject(false);
     }
@@ -211,15 +200,14 @@ export const ProjectTracker = ({ onSelectProject }) => {
       });
 
       if (!response.ok) throw new Error("Failed to update status");
-      
-      // Update local state
-      setProjects(projects.map(p => p.id === projectId ? { ...p, status: newStatus } : p));
-      
+
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, status: newStatus } : p));
+
       if (activeProject && activeProject.id === projectId) {
-        setActiveProject({ ...activeProject, status: newStatus });
+        setActiveProject(prev => ({ ...prev, status: newStatus }));
       }
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     }
   };
 
@@ -229,288 +217,19 @@ export const ProjectTracker = ({ onSelectProject }) => {
     handleStatusChange(projectId, newStatus);
   };
 
-  const handleOpenDetail = async (project) => {
+  const handleOpenDetail = (project) => {
     setActiveProject(project);
-    setShowDetailModal(true);
-    setAddMemberId('');
-    setDocTitle('');
-    setDocType('BRD');
-    setDocFile(null);
-    setEditMode(false);
-    setNewVersionName('');
-    setNewVersionComponent('');
-    setNewVersionChangelogFile(null);
-    fetchProjectComments(project.id);
-    fetchProjectMembers(project.id);
-    fetchProjectDocuments(project.id);
-    fetchProjectVersions(project.id);
+    setViewMode('detail');
   };
 
-  const fetchProjectVersions = async (projectId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${projectId}/versions`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        setProjectVersions(await response.json());
-      }
-    } catch (err) {
-      console.error(err);
-    }
+  const handleBackToBoard = () => {
+    setViewMode('board');
+    setActiveProject(null);
   };
 
-  const handleAddVersion = async (e) => {
-    e.preventDefault();
-    if (!newVersionName.trim()) return;
-    try {
-      setAddingVersion(true);
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/versions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ version_name: newVersionName.trim(), status: 'Planning' })
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to add version");
-      }
-      const version = await response.json();
-
-      if (newVersionComponent.trim()) {
-        await fetch(`${API_URL}/api/projects/${activeProject.id}/components`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ name: newVersionComponent.trim() })
-        });
-      }
-
-      if (newVersionChangelogFile) {
-        await uploadDocumentToProject(activeProject.id, {
-          file: newVersionChangelogFile,
-          title: `${newVersionName.trim()} Changelog`,
-          docType: 'Changelog',
-          versionId: version.id
-        });
-      }
-
-      setNewVersionName('');
-      setNewVersionComponent('');
-      setNewVersionChangelogFile(null);
-      fetchProjectVersions(activeProject.id);
-      fetchProjectDocuments(activeProject.id);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setAddingVersion(false);
-    }
-  };
-
-  const handleStartEdit = () => {
-    setEditName(activeProject.name);
-    setEditKey(activeProject.key);
-    setEditVendor(activeProject.vendor || '');
-    setEditLeadId(activeProject.lead_id || '');
-    setEditDescription(activeProject.description || '');
-    setEditMode(true);
-  };
-
-  const handleSaveProjectEdit = async (e) => {
-    e.preventDefault();
-    try {
-      setSavingEdit(true);
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name: editName,
-          key: editKey.toUpperCase(),
-          vendor: editVendor.trim(),
-          lead_id: editLeadId ? parseInt(editLeadId) : undefined,
-          description: editDescription
-        })
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to update project");
-      }
-      const updated = await response.json();
-      setActiveProject(updated);
-      setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
-      setEditMode(false);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-
-  const getFileUrl = (fileUrl) => {
-    if (!fileUrl) return '';
-    return fileUrl.startsWith('http') ? fileUrl : `${API_URL}${fileUrl}`;
-  };
-
-  const fetchProjectDocuments = async (projectId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${projectId}/documents`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        setProjectDocuments(await response.json());
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleUploadDocument = async (e) => {
-    e.preventDefault();
-    if (!docFile || !docTitle.trim()) return;
-
-    try {
-      setUploadingDoc(true);
-      const formData = new FormData();
-      formData.append('title', docTitle.trim());
-      formData.append('doc_type', docType);
-      formData.append('file', docFile);
-
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/documents`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to upload document");
-      }
-
-      setDocTitle('');
-      setDocType('BRD');
-      setDocFile(null);
-      fetchProjectDocuments(activeProject.id);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setUploadingDoc(false);
-    }
-  };
-
-  const handleDeleteDocument = async (documentId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/documents/${documentId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to delete document");
-      }
-      fetchProjectDocuments(activeProject.id);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const fetchProjectMembers = async (projectId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${projectId}/members`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        setProjectMembers(await response.json());
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleAddMember = async (e) => {
-    e.preventDefault();
-    if (!addMemberId) return;
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/members`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ user_id: parseInt(addMemberId) })
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to add member");
-      }
-      setAddMemberId('');
-      fetchProjectMembers(activeProject.id);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const handleRemoveMember = async (userId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/projects/${activeProject.id}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Failed to remove member");
-      }
-      fetchProjectMembers(activeProject.id);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const fetchProjectComments = async (projectId) => {
-    try {
-      const response = await fetch(`${API_URL}/api/comments?project_id=${projectId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setProjectComments(data);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handlePostComment = async (e) => {
-    e.preventDefault();
-    if (!newCommentText.trim()) return;
-
-    try {
-      const response = await fetch(`${API_URL}/api/comments`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          project_id: activeProject.id,
-          text: newCommentText
-        })
-      });
-
-      if (response.ok) {
-        setNewCommentText('');
-        fetchProjectComments(activeProject.id);
-      } else {
-        throw new Error("Failed to post update comment");
-      }
-    } catch (err) {
-      alert(err.message);
-    }
+  const handleProjectUpdated = (updated) => {
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+    setActiveProject(updated);
   };
 
   // Helper: get stats for a project
@@ -527,6 +246,32 @@ export const ProjectTracker = ({ onSelectProject }) => {
 
   if (loading) return <div style={styles.loading}>Loading projects status tracker...</div>;
 
+  if (viewMode === 'detail' && activeProject) {
+    return (
+      <ProjectDetailView
+        project={activeProject}
+        users={users}
+        bugs={bugs}
+        qaLeadOptions={qaLeadOptions}
+        pmLeadOptions={pmLeadOptions}
+        canEdit={canEdit}
+        canEditMembers={canEditMembers}
+        token={token}
+        API_URL={API_URL}
+        onBack={handleBackToBoard}
+        onProjectUpdated={handleProjectUpdated}
+        onStatusChange={handleStatusChange}
+        onSelectProject={onSelectProject}
+        uploadDocumentToProject={uploadDocumentToProject}
+        documentTypes={DOCUMENT_TYPES}
+        projectStatuses={PROJECT_STATUSES}
+      />
+    );
+  }
+
+  const visibleStatuses = showArchived ? PROJECT_STATUSES : PROJECT_STATUSES.filter(s => s !== 'Archived');
+  const archivedCount = projects.filter(p => p.status === 'Archived').length;
+
   return (
     <div style={styles.container} className="animate-fade-in">
       <div style={styles.headerBanner}>
@@ -535,23 +280,34 @@ export const ProjectTracker = ({ onSelectProject }) => {
             <FolderKanban size={24} color="var(--header-banner-icon)" />
             <h2 style={styles.title}>QA Project Tracker</h2>
           </div>
-          {canEdit && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button
-              className="btn-primary"
-              style={styles.addBtn}
-              onClick={() => setShowCreateModal(true)}
+              style={{ ...styles.archiveToggleBtn, ...(showArchived ? styles.archiveToggleBtnActive : {}) }}
+              onClick={() => setShowArchived(v => !v)}
+              title={showArchived ? 'Hide archived projects' : 'Show archived projects'}
+              aria-label={showArchived ? 'Hide archived projects' : 'Show archived projects'}
             >
-              <Plus size={16} /> Add QA Project
+              {showArchived ? <ArchiveRestore size={16} /> : <Archive size={16} />}
+              {archivedCount > 0 && <span style={styles.archiveCount}>{archivedCount}</span>}
             </button>
-          )}
+            {canEdit && (
+              <button
+                className="btn-primary"
+                style={styles.addBtn}
+                onClick={() => setShowCreateModal(true)}
+              >
+                <Plus size={16} /> Add QA Project
+              </button>
+            )}
+          </div>
         </div>
         <p style={styles.subtitle}>Track high-level QA stages of all ongoing software projects.</p>
       </div>
 
       {/* Board Layout */}
       <div style={styles.boardScrollContainer}>
-        <div style={styles.board}>
-          {PROJECT_STATUSES.map(status => {
+        <div style={{ ...styles.board, minWidth: `${visibleStatuses.length * 220}px` }}>
+          {visibleStatuses.map(status => {
             const statusProjects = projects.filter(p => p.status === status);
             return (
               <div
@@ -614,32 +370,25 @@ export const ProjectTracker = ({ onSelectProject }) => {
                         </div>
                         <h4 style={styles.cardName}>{project.name}</h4>
                         <p style={styles.cardDesc}>
-                          {project.description && project.description.length > 60 
-                            ? project.description.slice(0, 60) + '...' 
+                          {project.description && project.description.length > 60
+                            ? project.description.slice(0, 60) + '...'
                             : project.description || 'No description provided.'}
                         </p>
-                        
+
                         <div style={styles.cardFooter}>
-                          <div style={styles.cardStat}>
-                            <span style={{ color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}>
-                              Bugs: <strong>{stats.open}</strong>/{stats.total}
-                            </span>
-                          </div>
+                          <button
+                            style={{ ...styles.cardStatBtn, color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}
+                            onClick={(e) => { e.stopPropagation(); onSelectProject(project); }}
+                            title="Go to Bugs Board"
+                          >
+                            Bugs: <strong>{stats.open}</strong>/{stats.total}
+                            <ChevronRight size={12} />
+                          </button>
                           {stats.blockers > 0 && (
                             <span style={styles.blockerBadge} className="animate-blink-red">
                               {stats.blockers} Blocker{stats.blockers > 1 ? 's' : ''}
                             </span>
                           )}
-                        </div>
-
-                        <div style={styles.quickActions} onClick={(e) => e.stopPropagation()}>
-                          <button 
-                            className="btn-secondary"
-                            style={styles.quickGoBtn}
-                            onClick={() => onSelectProject(project)}
-                          >
-                            Bugs Board <ChevronRight size={14} />
-                          </button>
                         </div>
                       </div>
                     );
@@ -666,11 +415,17 @@ export const ProjectTracker = ({ onSelectProject }) => {
             </div>
             <form onSubmit={handleCreateProject} style={styles.modalForm}>
               <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Project Name</label>
+                <label style={styles.modalLabel}>Project Name <span style={styles.requiredMark}>*</span></label>
                 <input
                   type="text"
                   value={projName}
-                  onChange={(e) => setProjName(e.target.value)}
+                  onChange={(e) => {
+                    const nextName = e.target.value;
+                    setProjName(nextName);
+                    if (!keyManuallyEdited) {
+                      setProjKey(deriveProjectKey(nextName));
+                    }
+                  }}
                   placeholder="e.g. Mobile E-commerce Redesign"
                   required
                   autoFocus
@@ -684,7 +439,10 @@ export const ProjectTracker = ({ onSelectProject }) => {
                   <input
                     type="text"
                     value={projKey}
-                    onChange={(e) => setProjKey(e.target.value)}
+                    onChange={(e) => {
+                      setKeyManuallyEdited(true);
+                      setProjKey(e.target.value);
+                    }}
                     maxLength={5}
                     placeholder="e.g. SHOP"
                     required
@@ -714,25 +472,39 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 />
               </div>
 
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>QA Lead</label>
-                <select
-                  value={projLead}
-                  onChange={(e) => setProjLead(e.target.value)}
-                  style={styles.modalSelect}
-                >
-                  <option value="">Unassigned</option>
-                  {qaLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                </select>
+              <div style={styles.row}>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>QA Lead</label>
+                  <select
+                    value={projLead}
+                    onChange={(e) => setProjLead(e.target.value)}
+                    style={styles.modalSelect}
+                  >
+                    <option value="">Unassigned</option>
+                    {qaLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                  </select>
+                </div>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>PM Lead</label>
+                  <select
+                    value={projPmLead}
+                    onChange={(e) => setProjPmLead(e.target.value)}
+                    style={styles.modalSelect}
+                  >
+                    <option value="">Unassigned</option>
+                    {pmLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                  </select>
+                </div>
               </div>
 
               <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Description</label>
+                <label style={styles.modalLabel}>Description <span style={styles.requiredMark}>*</span></label>
                 <textarea
                   value={projDesc}
                   onChange={(e) => setProjDesc(e.target.value)}
                   placeholder="Project goals, QA scope, and testing pipelines..."
                   rows={4}
+                  required
                   style={styles.modalTextarea}
                 />
               </div>
@@ -800,365 +572,6 @@ export const ProjectTracker = ({ onSelectProject }) => {
           </div>
         </div>
       )}
-
-      {/* PROJECT DETAILS & STATUS UPDATES MODAL */}
-      {showDetailModal && activeProject && (
-        <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '600px' }}>
-            <div style={styles.modalHeader}>
-              <div>
-                <span style={styles.modalSubheading}>Project Details • {activeProject.key}</span>
-                <h3 style={styles.modalTitle}>{activeProject.name}</h3>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                {canEdit && !editMode && (
-                  <button style={styles.watchBtn} onClick={handleStartEdit} title="Edit project">
-                    <Pencil size={14} /> Edit
-                  </button>
-                )}
-                <button style={styles.closeBtn} onClick={() => setShowDetailModal(false)}>
-                  <X size={20} />
-                </button>
-              </div>
-            </div>
-
-            <div style={styles.modalBody}>
-              {editMode ? (
-                <form onSubmit={handleSaveProjectEdit} style={styles.modalForm}>
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>Project Name</label>
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      required
-                      style={styles.modalInput}
-                    />
-                  </div>
-                  <div style={styles.row}>
-                    <div style={{ ...styles.inputGroup, flex: 1 }}>
-                      <label style={styles.modalLabel}>Project Key</label>
-                      <input
-                        type="text"
-                        value={editKey}
-                        onChange={(e) => setEditKey(e.target.value)}
-                        maxLength={5}
-                        required
-                        style={styles.modalInput}
-                      />
-                    </div>
-                    <div style={{ ...styles.inputGroup, flex: 1 }}>
-                      <label style={styles.modalLabel}>Vendor/Developer</label>
-                      <input
-                        type="text"
-                        value={editVendor}
-                        onChange={(e) => setEditVendor(e.target.value)}
-                        placeholder="e.g. Acme Software Inc."
-                        style={styles.modalInput}
-                      />
-                    </div>
-                  </div>
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>QA Lead</label>
-                    <select
-                      value={editLeadId}
-                      onChange={(e) => setEditLeadId(e.target.value)}
-                      style={styles.modalSelect}
-                    >
-                      <option value="">Unassigned</option>
-                      {qaLeadOptions.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                    </select>
-                  </div>
-                  <div style={styles.inputGroup}>
-                    <label style={styles.modalLabel}>Description</label>
-                    <textarea
-                      value={editDescription}
-                      onChange={(e) => setEditDescription(e.target.value)}
-                      rows={4}
-                      style={styles.modalTextarea}
-                    />
-                  </div>
-                  <div style={styles.modalActions}>
-                    <button type="button" className="btn-secondary" onClick={() => setEditMode(false)} style={{ padding: '10px 20px' }}>Cancel</button>
-                    <button type="submit" className="btn-primary" style={{ padding: '10px 20px' }} disabled={savingEdit}>
-                      {savingEdit ? 'Saving...' : 'Save Changes'}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <>
-                  {/* Status Tracker Control */}
-                  <div style={styles.detailSection}>
-                    <h4 style={styles.detailTitle}>QA status</h4>
-                    <div style={styles.statusButtonsGroup}>
-                      {PROJECT_STATUSES.map(s => (
-                        <button
-                          key={s}
-                          disabled={!canEdit}
-                          onClick={() => canEdit && handleStatusChange(activeProject.id, s)}
-                          style={{
-                            ...styles.statusSelectorBtn,
-                            borderColor: activeProject.status === s ? `var(--status-${s.toLowerCase()})` : 'var(--glass-border)',
-                            background: activeProject.status === s ? 'var(--surface-hover)' : 'transparent',
-                            color: activeProject.status === s ? 'var(--text-strong)' : 'var(--text-muted)',
-                            cursor: canEdit ? 'pointer' : 'default',
-                            opacity: canEdit ? 1 : 0.7,
-                          }}
-                        >
-                          <span style={{
-                            ...styles.statusDot,
-                            background: `var(--status-${s.toLowerCase()})`
-                          }} />
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={styles.detailSection}>
-                    <h4 style={styles.detailTitle}>QA Project Scope</h4>
-                    <p style={styles.detailDescText}>{activeProject.description || "No description provided."}</p>
-                    <div style={styles.metaRow}>
-                      <span>Vendor/Developer: <strong>{activeProject.vendor || 'Not specified'}</strong></span>
-                      <span>QA Lead: <strong>{activeProject.lead ? activeProject.lead.full_name : 'Unassigned'}</strong></span>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Team / Project Members Section */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>
-                  <Users size={16} style={{ marginRight: '6px' }} />
-                  Team ({projectMembers.length})
-                </h4>
-                <div style={styles.teamList}>
-                  {projectMembers.length === 0 ? (
-                    <p style={styles.noComments}>No team members assigned yet.</p>
-                  ) : (
-                    projectMembers.map(m => (
-                      <div key={m.id} style={styles.teamRow}>
-                        <span style={styles.teamName}>{m.user.full_name}</span>
-                        <span style={styles.teamRole}>{m.user.role}</span>
-                        {canEditMembers && (
-                          <button
-                            style={styles.teamRemoveBtn}
-                            onClick={() => handleRemoveMember(m.user_id)}
-                            title="Remove from project"
-                          >
-                            <X size={13} />
-                          </button>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-                {canEditMembers && (
-                  <form onSubmit={handleAddMember} style={styles.addMemberForm}>
-                    <select
-                      value={addMemberId}
-                      onChange={(e) => setAddMemberId(e.target.value)}
-                      style={{ ...styles.modalSelect, flex: 1 }}
-                    >
-                      <option value="">Add a team member...</option>
-                      {users
-                        .filter(u => !projectMembers.some(m => m.user_id === u.id))
-                        .map(u => <option key={u.id} value={u.id}>{u.full_name} ({u.role})</option>)}
-                    </select>
-                    <button type="submit" className="btn-secondary" style={styles.addMemberBtn} disabled={!addMemberId}>
-                      <UserPlus size={14} /> Add
-                    </button>
-                  </form>
-                )}
-              </div>
-
-              {/* Versions Section */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>
-                  <GitBranch size={16} style={{ marginRight: '6px' }} />
-                  Versions ({projectVersions.length})
-                </h4>
-                <div style={styles.teamList}>
-                  {projectVersions.length === 0 ? (
-                    <p style={styles.noComments}>No versions added yet.</p>
-                  ) : (
-                    projectVersions.map(v => (
-                      <div key={v.id} style={styles.teamRow}>
-                        <span style={styles.teamName}>{v.version_name}</span>
-                        <span style={styles.teamRole}>{v.status}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-                {canEdit && (
-                  <form onSubmit={handleAddVersion} style={styles.docUploadForm}>
-                    <div style={styles.row}>
-                      <input
-                        type="text"
-                        value={newVersionName}
-                        onChange={(e) => setNewVersionName(e.target.value)}
-                        placeholder="Version number, e.g. v1.0, build 42"
-                        style={{ ...styles.modalInput, flex: 1 }}
-                      />
-                      <input
-                        type="text"
-                        value={newVersionComponent}
-                        onChange={(e) => setNewVersionComponent(e.target.value)}
-                        placeholder="Component (optional)"
-                        style={{ ...styles.modalInput, flex: 1 }}
-                      />
-                    </div>
-                    <div style={styles.row}>
-                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={styles.modalLabel}>
-                          <TagIcon size={11} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                          Changelog document (optional)
-                        </label>
-                        <input
-                          type="file"
-                          onChange={(e) => setNewVersionChangelogFile(e.target.files?.[0] || null)}
-                          style={styles.docFileInput}
-                          accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        className="btn-secondary"
-                        style={{ ...styles.addMemberBtn, alignSelf: 'flex-end' }}
-                        disabled={!newVersionName.trim() || addingVersion}
-                      >
-                        {addingVersion ? 'Adding...' : 'Add Version'}
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </div>
-
-              {/* Documents Section */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>
-                  <FileText size={16} style={{ marginRight: '6px' }} />
-                  Documents ({projectDocuments.length})
-                </h4>
-                <div style={styles.teamList}>
-                  {projectDocuments.length === 0 ? (
-                    <p style={styles.noComments}>No documents uploaded yet.</p>
-                  ) : (
-                    projectDocuments.map(doc => (
-                      <div key={doc.id} style={styles.docRow}>
-                        <span style={styles.docTypeBadge}>{doc.doc_type}</span>
-                        <div style={styles.docInfo}>
-                          <span style={styles.teamName}>{doc.title}</span>
-                          <span style={styles.docMeta}>
-                            {doc.original_filename} · {formatFileSize(doc.file_size)} · {doc.uploaded_by.full_name}
-                          </span>
-                        </div>
-                        <a
-                          href={getFileUrl(doc.file_url)}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={styles.docActionBtn}
-                          title="Download"
-                        >
-                          <Download size={14} />
-                        </a>
-                        {canEdit && (
-                          <button
-                            style={styles.teamRemoveBtn}
-                            onClick={() => handleDeleteDocument(doc.id)}
-                            title="Delete document"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-                {canEdit && (
-                  <form onSubmit={handleUploadDocument} style={styles.docUploadForm}>
-                    <div style={styles.row}>
-                      <input
-                        type="text"
-                        value={docTitle}
-                        onChange={(e) => setDocTitle(e.target.value)}
-                        placeholder="Document title, e.g. BRD v2"
-                        required
-                        style={{ ...styles.modalInput, flex: 2 }}
-                      />
-                      <select
-                        value={docType}
-                        onChange={(e) => setDocType(e.target.value)}
-                        style={{ ...styles.modalSelect, flex: 1 }}
-                      >
-                        {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </div>
-                    <div style={styles.row}>
-                      <input
-                        type="file"
-                        onChange={(e) => setDocFile(e.target.files?.[0] || null)}
-                        style={styles.docFileInput}
-                        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
-                      />
-                      <button
-                        type="submit"
-                        className="btn-secondary"
-                        style={styles.addMemberBtn}
-                        disabled={!docFile || !docTitle.trim() || uploadingDoc}
-                      >
-                        <Upload size={14} /> {uploadingDoc ? 'Uploading...' : 'Upload'}
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </div>
-
-              {/* Status Comments / Daily Updates Section */}
-              <div style={styles.detailSection}>
-                <h4 style={styles.detailTitle}>
-                  <MessageSquare size={16} style={{ marginRight: '6px' }} />
-                  End of Day & Status Updates
-                </h4>
-                
-                {/* Form to Post Update */}
-                <form onSubmit={handlePostComment} style={styles.commentForm}>
-                  <textarea 
-                    value={newCommentText}
-                    onChange={(e) => setNewCommentText(e.target.value)}
-                    placeholder="Log status update, blocker warnings, or EOD notes..."
-                    rows={2}
-                    required
-                    style={styles.commentInput}
-                  />
-                  <button type="submit" className="btn-primary" style={styles.postBtn}>
-                    Post Update
-                  </button>
-                </form>
-
-                {/* List of Comments */}
-                <div style={styles.commentsList}>
-                  {projectComments.length === 0 ? (
-                    <p style={styles.noComments}>No status updates posted yet for today.</p>
-                  ) : (
-                    projectComments.map(comment => (
-                      <div key={comment.id} style={styles.commentRow}>
-                        <div style={styles.commentMeta}>
-                          <strong>{comment.user.full_name}</strong>
-                          <span style={styles.commentTime}>
-                            {new Date(comment.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                          </span>
-                        </div>
-                        <p style={styles.commentText}>{comment.text}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
@@ -1202,6 +615,26 @@ const styles = {
     background: 'var(--header-banner-cta-bg)',
     color: 'var(--header-banner-cta-color)',
   },
+  archiveToggleBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    background: 'var(--header-banner-input-bg)',
+    border: '2px solid var(--header-banner-input-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--header-banner-input-color)',
+    padding: '10px',
+    cursor: 'pointer',
+  },
+  archiveToggleBtnActive: {
+    background: 'var(--primary-neon)',
+    borderColor: 'var(--primary-neon)',
+    color: 'var(--text-inverse)',
+  },
+  archiveCount: {
+    fontSize: '11px',
+    fontWeight: '700',
+  },
   boardScrollContainer: {
     overflowX: 'auto',
     paddingBottom: '16px',
@@ -1213,7 +646,6 @@ const styles = {
   board: {
     display: 'flex',
     gap: '16px',
-    minWidth: '1200px', // Ensures all 6 columns fit and scroll horizontally
     width: '100%',
   },
   column: {
@@ -1325,6 +757,17 @@ const styles = {
   cardStat: {
     fontSize: '12px',
   },
+  cardStatBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '3px',
+    fontSize: '12px',
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
   blockerBadge: {
     background: 'var(--danger-bg)',
     color: 'var(--danger-text)',
@@ -1333,15 +776,6 @@ const styles = {
     borderRadius: 'var(--border-radius-sm)',
     fontSize: '11px',
     fontWeight: '700',
-  },
-  quickActions: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-  },
-  quickGoBtn: {
-    padding: '4px 8px',
-    fontSize: '11px',
-    borderRadius: 'var(--border-radius-sm)',
   },
   loading: {
     textAlign: 'center',
@@ -1364,37 +798,11 @@ const styles = {
     color: 'var(--text-strong)',
     fontFamily: 'var(--font-display)',
   },
-  modalSubheading: {
-    fontSize: '12px',
-    color: 'var(--primary-neon)',
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
   closeBtn: {
     background: 'none',
     border: 'none',
     color: 'var(--text-muted)',
     cursor: 'pointer',
-  },
-  watchBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    padding: '6px 10px',
-    fontSize: '12px',
-    fontWeight: '600',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-  },
-  metaRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    color: 'var(--text-subtle)',
-    marginTop: '10px',
   },
   modalForm: {
     display: 'flex',
@@ -1410,6 +818,10 @@ const styles = {
     fontSize: '13px',
     fontWeight: '600',
     color: 'var(--text-muted)',
+  },
+  requiredMark: {
+    color: 'var(--danger-text, #e5484d)',
+    fontWeight: '700',
   },
   modalInput: {
     padding: '10px',
@@ -1449,143 +861,19 @@ const styles = {
     gap: '10px',
     marginTop: '10px',
   },
-  
-  // Project detail modal styles
-  modalBody: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '24px',
-  },
-  detailSection: {
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  detailTitle: {
-    fontSize: '14px',
-    fontWeight: '700',
-    color: 'var(--text-strong)',
-    marginBottom: '10px',
-    display: 'flex',
-    alignItems: 'center',
-    fontFamily: 'var(--font-display)',
-  },
-  statusButtonsGroup: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '8px',
-  },
-  statusSelectorBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '6px 12px',
-    borderWidth: '2px',
-    borderStyle: 'solid',
-    borderRadius: 'var(--border-radius-sm)',
-    fontSize: '13px',
-    fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  statusDot: {
-    width: '8px',
-    height: '8px',
-    borderRadius: '50%',
-  },
-  detailDescText: {
-    fontSize: '14px',
-    color: 'var(--text-muted)',
-    lineHeight: '1.6',
-    background: 'var(--bg-tertiary)',
-    padding: '12px',
-    borderRadius: 'var(--border-radius-sm)',
-    border: '2px solid var(--glass-border)',
-  },
-  commentForm: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    marginBottom: '16px',
-  },
-  commentInput: {
-    padding: '10px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    color: 'var(--text-main)',
-    outline: 'none',
-    fontSize: '14px',
-    resize: 'none',
-  },
-  postBtn: {
-    alignSelf: 'flex-end',
-    padding: '6px 14px',
-    fontSize: '13px',
-  },
-  commentsList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    maxHeight: '200px',
-    overflowY: 'auto',
-    borderTop: '2px solid var(--glass-border)',
-    paddingTop: '16px',
-  },
-  noComments: {
-    color: 'var(--text-subtle)',
-    fontSize: '13px',
-    textAlign: 'center',
-    padding: '10px 0',
-  },
-  commentRow: {
-    background: 'var(--bg-tertiary)',
-    padding: '10px 12px',
-    borderRadius: 'var(--border-radius-sm)',
-    border: '2px solid var(--glass-border)',
-  },
-  commentMeta: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    marginBottom: '4px',
-  },
-  commentTime: {
-    color: 'var(--text-subtle)',
-  },
-  commentText: {
-    fontSize: '13px',
-    color: 'var(--text-muted)',
-    lineHeight: '1.4',
-  },
 
-  // Team section
+  // Staged-document list (reused styling from the old detail-modal doc rows)
   teamList: {
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
     marginBottom: '12px',
   },
-  teamRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    padding: '8px 12px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-  },
   teamName: {
     flex: 1,
     fontSize: '13px',
     fontWeight: '600',
     color: 'var(--text-main)',
-  },
-  teamRole: {
-    fontSize: '11px',
-    fontWeight: '700',
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase',
   },
   teamRemoveBtn: {
     background: 'none',
@@ -1595,17 +883,11 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
   },
-  addMemberForm: {
-    display: 'flex',
-    gap: '8px',
-  },
   addMemberBtn: {
     padding: '8px 12px',
     fontSize: '13px',
     whiteSpace: 'nowrap',
   },
-
-  // Documents section
   docRow: {
     display: 'flex',
     alignItems: 'center',
@@ -1639,18 +921,6 @@ const styles = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-  },
-  docActionBtn: {
-    color: 'var(--text-muted)',
-    display: 'flex',
-    alignItems: 'center',
-    flexShrink: 0,
-  },
-  docUploadForm: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    marginTop: '4px',
   },
   docFileInput: {
     flex: 1,

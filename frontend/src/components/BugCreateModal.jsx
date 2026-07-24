@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, ImagePlus, Clipboard, AlertTriangle } from 'lucide-react';
+import { X, ImagePlus, Clipboard, AlertTriangle, ChevronDown } from 'lucide-react';
+import { useToast } from './Toast';
 
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
 const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
@@ -27,7 +28,8 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
   const [bugDesc, setBugDesc] = useState('');
   const [bugExpectedBehavior, setBugExpectedBehavior] = useState('');
   const [bugVerId, setBugVerId] = useState('');
-  const [bugComponentId, setBugComponentId] = useState('');
+  const [selectedComponentIds, setSelectedComponentIds] = useState([]);
+  const [showComponentDropdown, setShowComponentDropdown] = useState(false);
   const [bugSeverity, setBugSeverity] = useState('Medium');
   const [bugPriority, setBugPriority] = useState('Medium');
   const [bugType, setBugType] = useState('Functional');
@@ -41,6 +43,7 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
   const [labelSuggestions, setLabelSuggestions] = useState([]);
   const [showLabelSuggestions, setShowLabelSuggestions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const { showSuccess, showError } = useToast();
 
   useEffect(() => {
     if (!bugProjId) return;
@@ -52,6 +55,21 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bugProjId]);
+
+  const projectComponents = (components || []).filter(c => c.project_id === parseInt(bugProjId));
+
+  const toggleComponent = (id) => {
+    setSelectedComponentIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const selectedComponentNames = projectComponents
+    .filter(c => selectedComponentIds.includes(c.id))
+    .map(c => c.name);
+  const componentButtonLabel = selectedComponentNames.length === 0
+    ? 'Select features...'
+    : selectedComponentNames.length <= 2
+      ? selectedComponentNames.join(', ')
+      : `${selectedComponentNames.slice(0, 2).join(', ')} +${selectedComponentNames.length - 2} more`;
 
   const addLabel = (name) => {
     const normalized = name.trim().toLowerCase();
@@ -112,7 +130,7 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
           environment_details: bugEnvironmentDetails || null,
           project_id: parseInt(bugProjId),
           version_id: bugVerId ? parseInt(bugVerId) : null,
-          component_id: bugComponentId ? parseInt(bugComponentId) : null,
+          component_ids: selectedComponentIds,
           status: 'Open',
           severity: bugSeverity,
           priority: bugPriority,
@@ -160,8 +178,9 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
       }
 
       onCreated();
+      showSuccess(`Bug "${newBug.title}" logged successfully.`);
     } catch (err) {
-      alert(err.message);
+      showError(err.message);
     } finally {
       setSubmitting(false);
     }
@@ -259,16 +278,35 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
                 {versions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
               </select>
             </div>
-            <div style={{ ...styles.inputGroup, flex: 1 }}>
-              <label style={styles.modalLabel}>Component</label>
-              <select
-                value={bugComponentId}
-                onChange={(e) => setBugComponentId(e.target.value)}
-                style={styles.modalSelect}
+            <div style={{ ...styles.inputGroup, flex: 1, position: 'relative' }}>
+              <label style={styles.modalLabel}>Features</label>
+              <button
+                type="button"
+                onClick={() => setShowComponentDropdown(v => !v)}
+                onBlur={() => setTimeout(() => setShowComponentDropdown(false), 150)}
+                style={styles.componentDropdownToggle}
               >
-                <option value="">None</option>
-                {(components || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+                <span style={styles.componentDropdownToggleLabel}>{componentButtonLabel}</span>
+                <ChevronDown size={14} />
+              </button>
+              {showComponentDropdown && (
+                <div style={styles.componentDropdownPanel} onMouseDown={(e) => e.preventDefault()}>
+                  {projectComponents.length === 0 ? (
+                    <div style={styles.componentDropdownEmpty}>No features for this project yet.</div>
+                  ) : (
+                    projectComponents.map(c => (
+                      <label key={c.id} style={styles.componentDropdownItem}>
+                        <input
+                          type="checkbox"
+                          checked={selectedComponentIds.includes(c.id)}
+                          onChange={() => toggleComponent(c.id)}
+                        />
+                        {c.name}
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
               <label style={styles.modalLabel}>Severity</label>
@@ -475,6 +513,55 @@ const styles = {
     color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
+  },
+  componentDropdownToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '6px',
+    padding: '10px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    color: 'var(--text-main)',
+    fontSize: '14px',
+    cursor: 'pointer',
+    width: '100%',
+    textAlign: 'left',
+  },
+  componentDropdownToggleLabel: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  componentDropdownPanel: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: '4px',
+    zIndex: 5,
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    maxHeight: '180px',
+    overflowY: 'auto',
+    padding: '4px',
+  },
+  componentDropdownItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '7px 8px',
+    fontSize: '13px',
+    color: 'var(--text-main)',
+    cursor: 'pointer',
+    borderRadius: 'var(--border-radius-sm)',
+  },
+  componentDropdownEmpty: {
+    padding: '10px 8px',
+    fontSize: '12px',
+    color: 'var(--text-subtle)',
   },
   modalTextarea: {
     padding: '10px',
