@@ -163,6 +163,21 @@ class VersionOut(VersionBase):
         orm_mode = True
         from_attributes = True
 
+# Component Schemas
+class ComponentBase(BaseModel):
+    name: str
+
+class ComponentCreate(ComponentBase):
+    project_id: int
+
+class ComponentOut(ComponentBase):
+    id: int
+    project_id: int
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Comment Schemas
 class CommentBase(BaseModel):
     text: str
@@ -228,6 +243,7 @@ class BugBase(BaseModel):
     is_blocker: bool = False
     project_id: int
     version_id: Optional[int] = None
+    component_id: Optional[int] = None
     owner_id: Optional[int] = None
 
 class BugCreate(BugBase):
@@ -245,6 +261,7 @@ class BugUpdate(BaseModel):
     bug_type: Optional[str] = None
     is_blocker: Optional[bool] = None
     version_id: Optional[int] = None
+    component_id: Optional[int] = None
     owner_id: Optional[int] = None
 
 class BugOut(BugBase):
@@ -253,6 +270,8 @@ class BugOut(BugBase):
     project: Optional[ProjectOut] = None
     reopen_count: int = 0
     attachments: List[BugAttachmentOut] = []
+    component: Optional[ComponentOut] = None
+    labels: List[str] = []
     reporter_id: int
     reporter: UserOut
     owner: Optional[UserOut] = None
@@ -281,6 +300,20 @@ class BugLinkOut(BaseModel):
 class BugWatcherOut(BaseModel):
     id: int
     user: UserOut
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+# Bug Label Schemas
+class BugLabelCreate(BaseModel):
+    name: str
+
+class BugLabelOut(BaseModel):
+    id: int
+    name: str
+    created_by_id: int
     created_at: datetime
 
     class Config:

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   Bug as BugIcon, User as UserIcon, AlertTriangle, X, Search, RotateCcw, CheckSquare, Square,
-  FolderKanban, GitBranch, Flame, Flag, Tag, FilterX, Bookmark
+  FolderKanban, GitBranch, Flame, Flag, Tag, Tags, Boxes, FilterX, Bookmark
 } from 'lucide-react';
 import { canManageBugs, canEditBugFields } from '../utils/roles';
 import { BugCreateModal } from './BugCreateModal';
@@ -19,6 +19,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [bugs, setBugs] = useState([]);
   const [projects, setProjects] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [components, setComponents] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -30,6 +31,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [filterPriority, setFilterPriority] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterOwnerId, setFilterOwnerId] = useState('');
+  const [filterComponentId, setFilterComponentId] = useState('');
+  const [filterLabel, setFilterLabel] = useState('');
 
   // Saved filters
   const [savedFilters, setSavedFilters] = useState([]);
@@ -79,15 +82,19 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   useEffect(() => {
     if (filterProjectId) {
       fetchVersions(filterProjectId);
+      fetchComponents(filterProjectId);
     } else {
       setVersions([]);
       setFilterVersionId('');
+      setComponents([]);
+      setFilterComponentId('');
     }
   }, [filterProjectId]);
 
   useEffect(() => {
     if (bugProjId) {
       fetchVersions(bugProjId);
+      fetchComponents(bugProjId);
     }
   }, [bugProjId]);
 
@@ -135,6 +142,15 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     try {
       const response = await fetch(`${API_URL}/api/projects/${projId}/versions`, { headers: authHeaders });
       if (response.ok) setVersions(await response.json());
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchComponents = async (projId) => {
+    try {
+      const response = await fetch(`${API_URL}/api/projects/${projId}/components`, { headers: authHeaders });
+      if (response.ok) setComponents(await response.json());
     } catch (err) {
       console.error(err);
     }
@@ -219,6 +235,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             priority: filterPriority || null,
             bug_type: filterType || null,
             owner_id: filterOwnerId || null,
+            component_id: filterComponentId || null,
+            label: filterLabel || null,
             search: searchQuery || null,
           }
         })
@@ -240,6 +258,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     setFilterPriority(f.priority || '');
     setFilterType(f.bug_type || '');
     setFilterOwnerId(f.owner_id ? String(f.owner_id) : '');
+    setFilterComponentId(f.component_id ? String(f.component_id) : '');
+    setFilterLabel(f.label || '');
     setSearchQuery(f.search || '');
   };
 
@@ -291,6 +311,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     if (filterPriority && b.priority !== filterPriority) return false;
     if (filterType && b.bug_type !== filterType) return false;
     if (filterOwnerId && String(b.owner_id || '') !== filterOwnerId) return false;
+    if (filterComponentId && String(b.component_id || '') !== filterComponentId) return false;
+    if (filterLabel.trim() && !(b.labels || []).some(l => l.toLowerCase().includes(filterLabel.trim().toLowerCase()))) return false;
     return true;
   });
 
@@ -419,8 +441,33 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
             </select>
           </div>
 
+          {filterProjectId && (
+            <div style={styles.iconFilterGroup} title="Filter by component">
+              <Boxes size={14} color="var(--header-banner-label)" />
+              <select
+                value={filterComponentId}
+                onChange={(e) => setFilterComponentId(e.target.value)}
+                style={styles.iconFilterSelect}
+              >
+                <option value="">All Components</option>
+                {components.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div style={styles.iconFilterGroup} title="Filter by label">
+            <Tags size={14} color="var(--header-banner-label)" />
+            <input
+              type="text"
+              value={filterLabel}
+              onChange={(e) => setFilterLabel(e.target.value)}
+              placeholder="Label..."
+              style={{ ...styles.iconFilterSelect, maxWidth: '80px' }}
+            />
+          </div>
+
           <div style={styles.toolbarActions}>
-            {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId) && (
+            {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId || filterComponentId || filterLabel) && (
               <button
                 type="button"
                 style={styles.iconActionBtn}
@@ -433,6 +480,8 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                   setFilterType('');
                   setFilterOwnerId('');
                   setFilterVersionId('');
+                  setFilterComponentId('');
+                  setFilterLabel('');
                 }}
               >
                 <FilterX size={16} />
@@ -597,6 +646,13 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                           </span>
                         )}
                       </div>
+                      {bug.labels && bug.labels.length > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+                          {bug.labels.map(name => (
+                            <span key={name} style={styles.cardLabelChip}>{name}</span>
+                          ))}
+                        </div>
+                      )}
 
                       <div style={styles.cardFooter}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -665,6 +721,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           onCreated={() => { setShowCreateModal(false); fetchBugs(); }}
           projects={projects}
           versions={versions}
+          components={components}
           users={users}
           bugProjId={bugProjId}
           setBugProjId={setBugProjId}
@@ -683,6 +740,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           canEdit={canEdit}
           canDeleteAttachment={canDeleteAttachment}
           bugStatusOptions={bugStatusOptions}
+          components={components}
           users={users}
           currentUserId={user.id}
           token={token}
@@ -996,6 +1054,16 @@ const styles = {
     padding: '1px 5px',
     display: 'inline-block',
     width: 'fit-content',
+  },
+  cardLabelChip: {
+    fontSize: '9px',
+    fontWeight: '600',
+    color: 'var(--primary-neon)',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '1px 5px',
+    textTransform: 'lowercase',
   },
   reopenedTag: {
     fontSize: '9px',

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  MessageSquare, X, Eye, ImagePlus, Clipboard, Link as LinkIcon, RotateCcw
+  MessageSquare, X, Eye, ImagePlus, Clipboard, Link as LinkIcon, RotateCcw, Tags
 } from 'lucide-react';
 
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -42,6 +42,7 @@ export const BugDetailModal = ({
   canEdit,
   canDeleteAttachment,
   bugStatusOptions,
+  components,
   users,
   currentUserId,
   token,
@@ -64,6 +65,11 @@ export const BugDetailModal = ({
   const [linkType, setLinkType] = useState('relates_to');
   const [selectedLinkBugId, setSelectedLinkBugId] = useState('');
 
+  const [labels, setLabels] = useState([]);
+  const [labelSuggestions, setLabelSuggestions] = useState([]);
+  const [newLabelInput, setNewLabelInput] = useState('');
+  const [showLabelSuggestions, setShowLabelSuggestions] = useState(false);
+
   const authHeaders = { 'Authorization': `Bearer ${token}` };
   const jsonHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
 
@@ -74,6 +80,8 @@ export const BugDetailModal = ({
     fetchWatchers();
     fetchProjectMembers();
     fetchProjectBugs();
+    fetchLabels();
+    fetchLabelSuggestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bug.id]);
 
@@ -109,6 +117,20 @@ export const BugDetailModal = ({
     try {
       const res = await fetch(`${API_URL}/api/bugs?project_id=${bug.project_id}`, { headers: authHeaders });
       if (res.ok) setProjectBugs((await res.json()).filter(b => b.id !== bug.id));
+    } catch (err) { console.error(err); }
+  };
+
+  const fetchLabels = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/bugs/${bug.id}/labels`, { headers: authHeaders });
+      if (res.ok) setLabels(await res.json());
+    } catch (err) { console.error(err); }
+  };
+
+  const fetchLabelSuggestions = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/projects/${bug.project_id}/labels/suggestions`, { headers: authHeaders });
+      if (res.ok) setLabelSuggestions(await res.json());
     } catch (err) { console.error(err); }
   };
 
@@ -260,6 +282,50 @@ export const BugDetailModal = ({
     ? projectBugs.filter(b => b.title.toLowerCase().includes(linkSearch.trim().toLowerCase()))
     : [];
 
+  const handleAddLabel = async (name) => {
+    const trimmed = (name ?? newLabelInput).trim();
+    if (!trimmed) return;
+    try {
+      const res = await fetch(`${API_URL}/api/bugs/${bug.id}/labels`, {
+        method: 'POST', headers: jsonHeaders,
+        body: JSON.stringify({ name: trimmed })
+      });
+      if (!res.ok) throw new Error("Failed to add label");
+      setNewLabelInput('');
+      setShowLabelSuggestions(false);
+      fetchLabels();
+      fetchLabelSuggestions();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleLabelKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddLabel();
+    }
+  };
+
+  const handleDeleteLabel = async (labelId) => {
+    try {
+      const res = await fetch(`${API_URL}/api/bugs/${bug.id}/labels/${labelId}`, { method: 'DELETE', headers: authHeaders });
+      if (!res.ok) throw new Error("Failed to remove label");
+      setLabels(prev => prev.filter(l => l.id !== labelId));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const canDeleteLabel = (label) => canEditFields || label.created_by_id === currentUserId;
+
+  const labelMatches = newLabelInput.trim()
+    ? labelSuggestions.filter(s =>
+        s.toLowerCase().includes(newLabelInput.trim().toLowerCase()) &&
+        !labels.some(l => l.name === s)
+      )
+    : [];
+
   return (
     <div className="modal-overlay">
       <div className="modal-content glass-panel" style={{ maxWidth: '600px' }}>
@@ -341,6 +407,20 @@ export const BugDetailModal = ({
                 style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
               >
                 {BUG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.modalLabel}>Component</label>
+              <select
+                value={bug.component_id || ''}
+                disabled={!canEditFields}
+                onChange={(e) => handleFieldUpdate({ component_id: e.target.value ? parseInt(e.target.value) : -1 })}
+                style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
+              >
+                <option value="">None</option>
+                {(components || []).filter(c => c.project_id === bug.project_id).map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -484,6 +564,49 @@ export const BugDetailModal = ({
                     Add Link
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div style={styles.detailSection}>
+            <h4 style={styles.detailTitle}>
+              <Tags size={16} style={{ marginRight: '6px' }} />
+              Labels
+            </h4>
+            <div style={styles.labelChipRow}>
+              {labels.length === 0 && <p style={styles.noComments}>No labels yet.</p>}
+              {labels.map(label => (
+                <span key={label.id} style={styles.labelChip}>
+                  {label.name}
+                  {canDeleteLabel(label) && (
+                    <button type="button" onClick={() => handleDeleteLabel(label.id)} style={styles.labelChipRemove} title="Remove label">
+                      <X size={10} />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+            {canEdit && (
+              <div style={{ position: 'relative', maxWidth: '260px' }}>
+                <input
+                  type="text"
+                  value={newLabelInput}
+                  onChange={(e) => { setNewLabelInput(e.target.value); setShowLabelSuggestions(true); }}
+                  onKeyDown={handleLabelKeyDown}
+                  onFocus={() => setShowLabelSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowLabelSuggestions(false), 150)}
+                  placeholder="Add label, press Enter"
+                  style={styles.modalInput}
+                />
+                {showLabelSuggestions && labelMatches.length > 0 && (
+                  <div style={styles.linkSuggestions}>
+                    {labelMatches.slice(0, 6).map(name => (
+                      <div key={name} style={styles.linkSuggestionItem} onClick={() => handleAddLabel(name)}>
+                        {name}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -842,6 +965,34 @@ const styles = {
     color: 'var(--text-main)',
     cursor: 'pointer',
     borderBottom: '1px solid var(--glass-border)',
+  },
+  labelChipRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '8px',
+    marginBottom: '10px',
+  },
+  labelChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '4px 8px',
+    fontSize: '12px',
+    fontWeight: '600',
+    color: 'var(--primary-neon)',
+    textTransform: 'lowercase',
+  },
+  labelChipRemove: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: 0,
   },
   metaRow: {
     display: 'flex',

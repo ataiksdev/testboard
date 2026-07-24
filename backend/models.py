@@ -42,6 +42,7 @@ class Project(Base):
     activities = relationship("ActivityLog", back_populates="project", cascade="all, delete-orphan")
     members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
     documents = relationship("ProjectDocument", back_populates="project", cascade="all, delete-orphan")
+    components = relationship("Component", back_populates="project", cascade="all, delete-orphan")
 
 
 class Version(Base):
@@ -58,6 +59,18 @@ class Version(Base):
     bugs = relationship("Bug", back_populates="version")
 
 
+class Component(Base):
+    __tablename__ = "components"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String, nullable=False)  # e.g., "Checkout", "Auth"
+
+    # Relationships
+    project = relationship("Project", back_populates="components")
+    bugs = relationship("Bug", back_populates="component")
+
+
 class Bug(Base):
     __tablename__ = "bugs"
 
@@ -65,6 +78,7 @@ class Bug(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     project_sequence = Column(Integer, nullable=True)
     version_id = Column(Integer, ForeignKey("versions.id"), nullable=True)
+    component_id = Column(Integer, ForeignKey("components.id"), nullable=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     expected_behavior = Column(Text, nullable=True)
@@ -85,11 +99,17 @@ class Bug(Base):
     # Relationships
     project = relationship("Project", back_populates="bugs")
     version = relationship("Version", back_populates="bugs")
+    component = relationship("Component", back_populates="bugs")
     owner = relationship("User", back_populates="assigned_bugs", foreign_keys=[owner_id])
     reporter = relationship("User", back_populates="reported_bugs", foreign_keys=[reporter_id])
     comments = relationship("Comment", back_populates="bug", cascade="all, delete-orphan")
     activities = relationship("ActivityLog", back_populates="bug", cascade="all, delete-orphan")
     attachments = relationship("BugAttachment", back_populates="bug", cascade="all, delete-orphan")
+    label_entries = relationship("BugLabel", back_populates="bug", cascade="all, delete-orphan")
+
+    @property
+    def labels(self):
+        return [l.name for l in self.label_entries]
 
 
 class Comment(Base):
@@ -154,6 +174,21 @@ class BugLink(Base):
     # Relationships
     bug = relationship("Bug", foreign_keys=[bug_id])
     related_bug = relationship("Bug", foreign_keys=[related_bug_id])
+    created_by = relationship("User")
+
+
+class BugLabel(Base):
+    __tablename__ = "bug_labels"
+    __table_args__ = (UniqueConstraint("bug_id", "name", name="uq_bug_label"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)
+    name = Column(String, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    bug = relationship("Bug", back_populates="label_entries")
     created_by = relationship("User")
 
 

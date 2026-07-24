@@ -43,6 +43,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [projLead, setProjLead] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('new');
   const [versionName, setVersionName] = useState('');
+  const [componentName, setComponentName] = useState('');
 
   const { token, API_URL, user } = useAuth();
   const canEdit = canManageProjects(user.role);
@@ -92,6 +93,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
     setProjDesc('');
     setProjStatus('Intake');
     setVersionName('');
+    setComponentName('');
     if (users.length > 0) {
       setProjLead(users[0].id);
     }
@@ -113,6 +115,23 @@ export const ProjectTracker = ({ onSelectProject }) => {
     if (!response.ok) {
       const data = await response.json();
       throw new Error(data.detail || "Failed to add project version");
+    }
+  };
+
+  const createProjectComponent = async (projectId) => {
+    if (!componentName.trim()) return;
+    const response = await fetch(`${API_URL}/api/projects/${projectId}/components`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ name: componentName.trim() })
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.detail || "Failed to add component");
     }
   };
 
@@ -151,6 +170,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
       }
 
       await createProjectVersion(projectId);
+      await createProjectComponent(projectId);
 
       setShowCreateModal(false);
       resetProjectForm();
@@ -543,6 +563,17 @@ export const ProjectTracker = ({ onSelectProject }) => {
                   onChange={(e) => setVersionName(e.target.value)}
                   placeholder="e.g. v1.0, 2026.06, build 42"
                   required
+                  style={styles.modalInput}
+                />
+              </div>
+
+              <div style={styles.inputGroup}>
+                <label style={styles.modalLabel}>Component (optional)</label>
+                <input
+                  type="text"
+                  value={componentName}
+                  onChange={(e) => setComponentName(e.target.value)}
+                  placeholder="e.g. Checkout, Auth"
                   style={styles.modalInput}
                 />
               </div>

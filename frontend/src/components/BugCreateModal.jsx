@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ImagePlus, Clipboard, AlertTriangle } from 'lucide-react';
 
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -22,11 +22,12 @@ const readImageFile = (file, onLoaded) => {
   reader.readAsDataURL(file);
 };
 
-export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, bugProjId, setBugProjId, token, API_URL }) => {
+export const BugCreateModal = ({ onClose, onCreated, projects, versions, components, users, bugProjId, setBugProjId, token, API_URL }) => {
   const [bugTitle, setBugTitle] = useState('');
   const [bugDesc, setBugDesc] = useState('');
   const [bugExpectedBehavior, setBugExpectedBehavior] = useState('');
   const [bugVerId, setBugVerId] = useState('');
+  const [bugComponentId, setBugComponentId] = useState('');
   const [bugSeverity, setBugSeverity] = useState('Medium');
   const [bugPriority, setBugPriority] = useState('Medium');
   const [bugType, setBugType] = useState('Functional');
@@ -35,7 +36,45 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, 
   const [bugOwnerId, setBugOwnerId] = useState('');
   const [bugIsBlocker, setBugIsBlocker] = useState(false);
   const [stagedAttachments, setStagedAttachments] = useState([]); // [{dataUrl, name}]
+  const [stagedLabels, setStagedLabels] = useState([]);
+  const [labelInput, setLabelInput] = useState('');
+  const [labelSuggestions, setLabelSuggestions] = useState([]);
+  const [showLabelSuggestions, setShowLabelSuggestions] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!bugProjId) return;
+    fetch(`${API_URL}/api/projects/${bugProjId}/labels/suggestions`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.ok ? res.json() : [])
+      .then(setLabelSuggestions)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bugProjId]);
+
+  const addLabel = (name) => {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) return;
+    setStagedLabels(prev => prev.includes(normalized) ? prev : [...prev, normalized]);
+    setLabelInput('');
+    setShowLabelSuggestions(false);
+  };
+
+  const removeLabel = (name) => {
+    setStagedLabels(prev => prev.filter(l => l !== name));
+  };
+
+  const handleLabelKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addLabel(labelInput);
+    }
+  };
+
+  const labelMatches = labelInput.trim()
+    ? labelSuggestions.filter(l => l.includes(labelInput.trim().toLowerCase()) && !stagedLabels.includes(l))
+    : [];
 
   const stageFile = (file) => {
     readImageFile(file, (dataUrl, name) => {
@@ -73,6 +112,7 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, 
           environment_details: bugEnvironmentDetails || null,
           project_id: parseInt(bugProjId),
           version_id: bugVerId ? parseInt(bugVerId) : null,
+          component_id: bugComponentId ? parseInt(bugComponentId) : null,
           status: 'Open',
           severity: bugSeverity,
           priority: bugPriority,
@@ -101,6 +141,21 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, 
           });
         } catch (err) {
           console.error('Attachment upload failed', err);
+        }
+      }
+
+      for (const label of stagedLabels) {
+        try {
+          await fetch(`${API_URL}/api/bugs/${newBug.id}/labels`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ name: label })
+          });
+        } catch (err) {
+          console.error('Label add failed', err);
         }
       }
 
@@ -205,6 +260,17 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, 
               </select>
             </div>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.modalLabel}>Component</label>
+              <select
+                value={bugComponentId}
+                onChange={(e) => setBugComponentId(e.target.value)}
+                style={styles.modalSelect}
+              >
+                <option value="">None</option>
+                {(components || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
               <label style={styles.modalLabel}>Severity</label>
               <select
                 value={bugSeverity}
@@ -291,6 +357,43 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, users, 
                 ))}
               </div>
             )}
+          </div>
+
+          <div style={styles.inputGroup}>
+            <label style={styles.modalLabel}>Labels</label>
+            {stagedLabels.length > 0 && (
+              <div style={styles.labelChipRow}>
+                {stagedLabels.map(l => (
+                  <span key={l} style={styles.labelChip}>
+                    {l}
+                    <button type="button" onClick={() => removeLabel(l)} style={styles.labelChipRemove}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                value={labelInput}
+                onChange={(e) => { setLabelInput(e.target.value); setShowLabelSuggestions(true); }}
+                onKeyDown={handleLabelKeyDown}
+                onFocus={() => setShowLabelSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowLabelSuggestions(false), 150)}
+                placeholder="Type a label and press Enter..."
+                style={styles.modalInput}
+              />
+              {showLabelSuggestions && labelMatches.length > 0 && (
+                <div style={styles.labelSuggestions}>
+                  {labelMatches.slice(0, 6).map(l => (
+                    <div key={l} style={styles.labelSuggestionItem} onClick={() => addLabel(l)}>
+                      {l}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div style={styles.checkboxGroup}>
@@ -475,5 +578,51 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '10px',
     marginTop: '10px',
+  },
+  labelChipRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px',
+    marginBottom: '6px',
+  },
+  labelChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '3px 6px 3px 10px',
+    fontSize: '12px',
+    color: 'var(--text-main)',
+  },
+  labelChipRemove: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: 0,
+  },
+  labelSuggestions: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: '4px',
+    zIndex: 5,
+    background: 'var(--bg-elevated)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    maxHeight: '160px',
+    overflowY: 'auto',
+  },
+  labelSuggestionItem: {
+    padding: '8px 10px',
+    fontSize: '13px',
+    color: 'var(--text-main)',
+    cursor: 'pointer',
+    borderBottom: '1px solid var(--glass-border)',
   },
 };

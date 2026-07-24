@@ -22,8 +22,8 @@ load_dotenv()
 
 from backend.database import engine, Base, get_db, SessionLocal
 from backend.models import (
-    User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
-    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, SavedBugFilter
+    User, Project, Version, Component, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
+    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, SavedBugFilter
 )
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
@@ -34,8 +34,10 @@ from backend.schemas import (
     ProjectDocumentOut,
     NotificationOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
+    ComponentBase, ComponentCreate, ComponentOut,
     BugCreate, BugOut, BugUpdate,
     BugAttachmentCreate, BugAttachmentOut, BugSummaryOut, BugLinkCreate, BugLinkOut, BugWatcherOut,
+    BugLabelCreate, BugLabelOut,
     SavedBugFilterCreate, SavedBugFilterOut, BugBulkUpdateIn,
     CommentCreate, CommentOut,
     ActivityLogOut,
@@ -96,6 +98,8 @@ def ensure_sqlite_schema():
             connection.execute(text("ALTER TABLE bugs ADD COLUMN environment_details TEXT"))
         if "reopen_count" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN reopen_count INTEGER DEFAULT 0"))
+        if "component_id" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN component_id INTEGER"))
 
         attachment_columns = {
             row[1]
@@ -219,6 +223,15 @@ def require_version_for_project(db: Session, version_id: int, project_id: int) -
     if not version:
         raise HTTPException(status_code=404, detail="Version not found for project")
     return version
+
+def require_component_for_project(db: Session, component_id: int, project_id: int) -> Component:
+    component = db.query(Component).filter(
+        Component.id == component_id,
+        Component.project_id == project_id
+    ).first()
+    if not component:
+        raise HTTPException(status_code=404, detail="Component not found for project")
+    return component
 
 def save_screenshot_data(screenshot_data: Optional[str]) -> Optional[str]:
     if not screenshot_data:
@@ -694,6 +707,27 @@ def list_versions(project_id: int, current_user: User = Depends(get_current_user
     return db.query(Version).filter(Version.project_id == project_id).all()
 
 
+# ==================== COMPONENTS ENDPOINTS ====================
+
+@app.post("/api/projects/{project_id}/components", response_model=ComponentOut)
+def create_component(project_id: int, component_in: ComponentBase, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+
+    new_component = Component(
+        project_id=project_id,
+        name=component_in.name,
+    )
+    db.add(new_component)
+    db.commit()
+    db.refresh(new_component)
+    return new_component
+
+@app.get("/api/projects/{project_id}/components", response_model=List[ComponentOut])
+def list_components(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    return db.query(Component).filter(Component.project_id == project_id).all()
+
+
 # ==================== PROJECT MEMBERS ENDPOINTS ====================
 
 @app.get("/api/projects/{project_id}/members", response_model=List[ProjectMemberOut])
@@ -847,6 +881,8 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
     project = require_project(db, bug_in.project_id)
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug_in.project_id)
+    if bug_in.component_id is not None:
+        require_component_for_project(db, bug_in.component_id, bug_in.project_id)
     if bug_in.owner_id is not None:
         require_active_user(db, bug_in.owner_id, detail="Bug owner not found")
     _check_dev_status_allowed(current_user, bug_in.status)
@@ -861,6 +897,7 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
         project_id=bug_in.project_id,
         project_sequence=next_sequence,
         version_id=bug_in.version_id,
+        component_id=bug_in.component_id,
         title=bug_in.title,
         description=bug_in.description,
         expected_behavior=bug_in.expected_behavior,
@@ -979,6 +1016,13 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug.project_id)
         bug.version_id = bug_in.version_id
+    if bug_in.component_id is not None:
+        # Note: can pass -1 to unassign
+        if bug_in.component_id == -1:
+            bug.component_id = None
+        else:
+            require_component_for_project(db, bug_in.component_id, bug.project_id)
+            bug.component_id = bug_in.component_id
     if bug_in.owner_id is not None:
         # Note: can pass -1 to unassign
         if bug_in.owner_id == -1:
@@ -1231,6 +1275,53 @@ def unwatch_bug(bug_id: int, current_user: User = Depends(get_current_user), db:
         db.delete(watcher)
         db.commit()
     return {"message": "No longer watching this bug"}
+
+
+# ==================== BUG LABELS ENDPOINTS ====================
+
+@app.get("/api/bugs/{bug_id}/labels", response_model=List[BugLabelOut])
+def list_bug_labels(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+    return db.query(BugLabel).filter(BugLabel.bug_id == bug_id).all()
+
+@app.post("/api/bugs/{bug_id}/labels", response_model=BugLabelOut)
+def add_bug_label(bug_id: int, label_in: BugLabelCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+
+    normalized = label_in.name.strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Label name cannot be empty")
+
+    existing = db.query(BugLabel).filter(BugLabel.bug_id == bug_id, BugLabel.name == normalized).first()
+    if existing:
+        return existing
+
+    label = BugLabel(bug_id=bug_id, name=normalized, created_by_id=current_user.id)
+    db.add(label)
+    db.commit()
+    db.refresh(label)
+    return label
+
+@app.delete("/api/bugs/{bug_id}/labels/{label_id}")
+def delete_bug_label(bug_id: int, label_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    label = db.query(BugLabel).filter(BugLabel.id == label_id, BugLabel.bug_id == bug_id).first()
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+    if current_user.role not in ("Admin", "QA") and label.created_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only Admin, QA, or the label's creator can remove it")
+    db.delete(label)
+    db.commit()
+    return {"message": "Label removed"}
+
+@app.get("/api/projects/{project_id}/labels/suggestions", response_model=List[str])
+def suggest_project_labels(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    rows = db.query(BugLabel.name).join(Bug, BugLabel.bug_id == Bug.id).filter(Bug.project_id == project_id).distinct().all()
+    return sorted({r[0] for r in rows})
 
 
 # ==================== SAVED BUG FILTERS ENDPOINTS ====================

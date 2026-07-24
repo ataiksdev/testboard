@@ -1163,3 +1163,119 @@ def test_screenshot_url_migration_backfill(tmp_path):
         assert len(rows) == 1
         assert rows[0][0] == 1
         assert rows[0][1] == "/uploads/screenshots/legacy.png"
+
+
+def test_component_crud_and_bug_assignment():
+    admin_headers = _make_admin()
+    pm_headers, _ = _make_user_with_role(admin_headers, "compsspm@test.com", "Comp PM", "PM")
+    dev_headers, _ = _make_user_with_role(admin_headers, "compsdev@test.com", "Comp Dev", "Dev")
+    guest_headers, _ = _make_user_with_role(admin_headers, "compsguest@test.com", "Comp Guest", "Guest")
+
+    project_a = client.post("/api/projects", json={"name": "Comp Proj A", "key": "CPA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Comp Proj B", "key": "CPB"}, headers=admin_headers).json()
+
+    # Admin, PM, QA can create components; Dev and Guest cannot
+    resp = client.post(f"/api/projects/{project_a['id']}/components", json={"name": "Checkout"}, headers=admin_headers)
+    assert resp.status_code == 200
+    component = resp.json()
+    assert component["name"] == "Checkout"
+    assert component["project_id"] == project_a["id"]
+
+    resp = client.post(f"/api/projects/{project_a['id']}/components", json={"name": "Auth"}, headers=pm_headers)
+    assert resp.status_code == 200
+
+    resp = client.post(f"/api/projects/{project_a['id']}/components", json={"name": "Nope"}, headers=dev_headers)
+    assert resp.status_code == 403
+    resp = client.post(f"/api/projects/{project_a['id']}/components", json={"name": "Nope"}, headers=guest_headers)
+    assert resp.status_code == 403
+
+    # List returns both
+    resp = client.get(f"/api/projects/{project_a['id']}/components", headers=dev_headers)
+    assert resp.status_code == 200
+    names = {c["name"] for c in resp.json()}
+    assert names == {"Checkout", "Auth"}
+
+    # Assign on create
+    bug = client.post("/api/bugs", json={
+        "title": "Checkout bug",
+        "project_id": project_a["id"],
+        "component_id": component["id"]
+    }, headers=admin_headers).json()
+    assert bug["component"]["name"] == "Checkout"
+
+    # Assign on update
+    bug2 = client.post("/api/bugs", json={"title": "No component yet", "project_id": project_a["id"]}, headers=admin_headers).json()
+    assert bug2["component"] is None
+    resp = client.put(f"/api/bugs/{bug2['id']}", json={"component_id": component["id"]}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["component"]["name"] == "Checkout"
+
+    # A component from a different project is rejected
+    component_b = client.post(f"/api/projects/{project_b['id']}/components", json={"name": "OtherComp"}, headers=admin_headers).json()
+    resp = client.post("/api/bugs", json={
+        "title": "Cross-project component",
+        "project_id": project_a["id"],
+        "component_id": component_b["id"]
+    }, headers=admin_headers)
+    assert resp.status_code == 404
+
+
+def test_bug_labels():
+    admin_headers = _make_admin()
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "labeldev@test.com", "Label Dev", "Dev")
+    guest_headers, _ = _make_user_with_role(admin_headers, "labelguest@test.com", "Label Guest", "Guest")
+    project = client.post("/api/projects", json={"name": "Label Proj", "key": "LBP"}, headers=admin_headers).json()
+    bug = client.post("/api/bugs", json={"title": "Label bug", "project_id": project["id"]}, headers=admin_headers).json()
+
+    # Guest and Dev can both add labels
+    resp = client.post(f"/api/bugs/{bug['id']}/labels", json={"name": "Regression"}, headers=guest_headers)
+    assert resp.status_code == 200
+    guest_label = resp.json()
+    assert guest_label["name"] == "regression"  # normalized to lowercase
+
+    resp = client.post(f"/api/bugs/{bug['id']}/labels", json={"name": "customer-reported"}, headers=dev_headers)
+    assert resp.status_code == 200
+    dev_label = resp.json()
+
+    # Duplicate (case-insensitive) add is idempotent, no new row
+    resp = client.post(f"/api/bugs/{bug['id']}/labels", json={"name": "regression"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["id"] == guest_label["id"]
+
+    resp = client.get(f"/api/bugs/{bug['id']}/labels", headers=admin_headers)
+    assert len(resp.json()) == 2
+
+    # Labels show up embedded on the bug
+    resp = client.get("/api/bugs", headers=admin_headers)
+    fetched = next(b for b in resp.json() if b["id"] == bug["id"])
+    assert sorted(fetched["labels"]) == ["customer-reported", "regression"]
+
+    # Delete permission: a Dev who didn't create the label cannot remove it
+    resp = client.delete(f"/api/bugs/{bug['id']}/labels/{guest_label['id']}", headers=dev_headers)
+    assert resp.status_code == 403
+
+    # But the Dev can remove their own label
+    resp = client.delete(f"/api/bugs/{bug['id']}/labels/{dev_label['id']}", headers=dev_headers)
+    assert resp.status_code == 200
+
+    # Admin can remove anyone's label
+    resp = client.delete(f"/api/bugs/{bug['id']}/labels/{guest_label['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get(f"/api/bugs/{bug['id']}/labels", headers=admin_headers)
+    assert resp.json() == []
+
+
+def test_label_suggestions():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Suggest Proj", "key": "SGP"}, headers=admin_headers).json()
+    bug_a = client.post("/api/bugs", json={"title": "Bug A", "project_id": project["id"]}, headers=admin_headers).json()
+    bug_b = client.post("/api/bugs", json={"title": "Bug B", "project_id": project["id"]}, headers=admin_headers).json()
+
+    client.post(f"/api/bugs/{bug_a['id']}/labels", json={"name": "Flaky"}, headers=admin_headers)
+    client.post(f"/api/bugs/{bug_b['id']}/labels", json={"name": "flaky"}, headers=admin_headers)  # same after normalization
+    client.post(f"/api/bugs/{bug_b['id']}/labels", json={"name": "perf"}, headers=admin_headers)
+
+    resp = client.get(f"/api/projects/{project['id']}/labels/suggestions", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json() == ["flaky", "perf"]
