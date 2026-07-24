@@ -170,7 +170,7 @@ class CommentBase(BaseModel):
     bug_id: Optional[int] = None
 
 class CommentCreate(CommentBase):
-    pass
+    mentioned_user_ids: List[int] = []
 
 class CommentOut(CommentBase):
     id: int
@@ -182,11 +182,45 @@ class CommentOut(CommentBase):
         orm_mode = True
         from_attributes = True
 
+# Bug Attachment Schemas
+class BugAttachmentCreate(BaseModel):
+    screenshot_data: str
+    filename: Optional[str] = None
+
+class BugAttachmentOut(BaseModel):
+    id: int
+    bug_id: int
+    comment_id: Optional[int] = None
+    file_url: str
+    original_filename: str
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+    uploaded_by: UserOut
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+# Lightweight bug reference used by BugLinkOut, avoids recursive BugOut nesting
+class BugSummaryOut(BaseModel):
+    id: int
+    title: str
+    status: str
+    project_sequence: Optional[int] = None
+    project: Optional[ProjectOut] = None
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Bug Schemas
 class BugBase(BaseModel):
     title: str
     description: Optional[str] = None
     expected_behavior: Optional[str] = None
+    environment: Optional[str] = None
+    environment_details: Optional[str] = None
     status: str = "Open"
     severity: str = "Medium"
     priority: str = "Medium"
@@ -197,13 +231,14 @@ class BugBase(BaseModel):
     owner_id: Optional[int] = None
 
 class BugCreate(BugBase):
-    screenshot_data: Optional[str] = None
+    pass
 
 class BugUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     expected_behavior: Optional[str] = None
-    screenshot_data: Optional[str] = None
+    environment: Optional[str] = None
+    environment_details: Optional[str] = None
     status: Optional[str] = None
     severity: Optional[str] = None
     priority: Optional[str] = None
@@ -216,7 +251,8 @@ class BugOut(BugBase):
     id: int
     project_sequence: Optional[int] = None
     project: Optional[ProjectOut] = None
-    screenshot_url: Optional[str] = None
+    reopen_count: int = 0
+    attachments: List[BugAttachmentOut] = []
     reporter_id: int
     reporter: UserOut
     owner: Optional[UserOut] = None
@@ -228,6 +264,46 @@ class BugOut(BugBase):
     class Config:
         orm_mode = True
         from_attributes = True
+
+# Bug Link Schemas
+class BugLinkCreate(BaseModel):
+    related_bug_id: int
+    link_type: str  # relates_to, blocks, duplicate_of
+
+class BugLinkOut(BaseModel):
+    id: int
+    link_type: str
+    direction: str  # outgoing, incoming
+    related_bug: BugSummaryOut
+    created_at: datetime
+
+# Bug Watcher Schemas
+class BugWatcherOut(BaseModel):
+    id: int
+    user: UserOut
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
+# Saved Bug Filter Schemas
+class SavedBugFilterCreate(BaseModel):
+    name: str
+    filters: Dict
+    is_shared: bool = False
+
+class SavedBugFilterOut(BaseModel):
+    id: int
+    name: str
+    filters: Dict
+    is_shared: bool
+    created_at: datetime
+
+# Bulk Update Schema
+class BugBulkUpdateIn(BaseModel):
+    bug_ids: List[int]
+    fields: Dict  # subset of BugUpdate fields, currently: status, owner_id
 
 # ActivityLog Schema
 class ActivityLogOut(BaseModel):

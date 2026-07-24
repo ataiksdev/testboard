@@ -1,6 +1,7 @@
 import base64
 import datetime
 import io
+import json
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -20,7 +21,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from backend.database import engine, Base, get_db, SessionLocal
-from backend.models import User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument, PasswordResetRequest, Notification
+from backend.models import (
+    User, Project, Version, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
+    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, SavedBugFilter
+)
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
     PasswordResetRequestCreate, PasswordResetRequestOut, PasswordResetResolve,
@@ -31,6 +35,8 @@ from backend.schemas import (
     NotificationOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     BugCreate, BugOut, BugUpdate,
+    BugAttachmentCreate, BugAttachmentOut, BugSummaryOut, BugLinkCreate, BugLinkOut, BugWatcherOut,
+    SavedBugFilterCreate, SavedBugFilterOut, BugBulkUpdateIn,
     CommentCreate, CommentOut,
     ActivityLogOut,
     ReportDataOut
@@ -76,8 +82,6 @@ def ensure_sqlite_schema():
             row[1]
             for row in connection.execute(text("PRAGMA table_info(bugs)")).fetchall()
         }
-        if "screenshot_url" not in bug_columns:
-            connection.execute(text("ALTER TABLE bugs ADD COLUMN screenshot_url VARCHAR"))
         if "priority" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN priority VARCHAR DEFAULT 'Medium'"))
         if "bug_type" not in bug_columns:
@@ -86,6 +90,39 @@ def ensure_sqlite_schema():
             connection.execute(text("ALTER TABLE bugs ADD COLUMN expected_behavior TEXT"))
         if "project_sequence" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN project_sequence INTEGER"))
+        if "environment" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN environment VARCHAR"))
+        if "environment_details" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN environment_details TEXT"))
+        if "reopen_count" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN reopen_count INTEGER DEFAULT 0"))
+
+        attachment_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(bug_attachments)")).fetchall()
+        }
+        if "comment_id" not in attachment_columns:
+            connection.execute(text("ALTER TABLE bug_attachments ADD COLUMN comment_id INTEGER"))
+
+        # Legacy screenshot_url -> bug_attachments migration. bug_attachments
+        # already exists here since Base.metadata.create_all() runs before this
+        # function. NOT EXISTS guard keeps the backfill idempotent even if
+        # DROP COLUMN below can't run (older SQLite).
+        if "screenshot_url" in bug_columns:
+            connection.execute(text("""
+                INSERT INTO bug_attachments (bug_id, uploaded_by_id, file_url, original_filename, content_type, file_size, created_at)
+                SELECT b.id, b.reporter_id, b.screenshot_url, 'screenshot', NULL, NULL, b.created_at
+                FROM bugs b
+                WHERE b.screenshot_url IS NOT NULL AND b.screenshot_url != ''
+                AND NOT EXISTS (
+                    SELECT 1 FROM bug_attachments a
+                    WHERE a.bug_id = b.id AND a.file_url = b.screenshot_url
+                )
+            """))
+            try:
+                connection.execute(text("ALTER TABLE bugs DROP COLUMN screenshot_url"))
+            except Exception:
+                pass  # SQLite < 3.35 can't drop columns; the leftover column is inert since the model no longer references it
 
         # Backfill per-project sequence numbers for any bugs that don't have one yet
         connection.execute(text("""
@@ -789,18 +826,20 @@ def _check_dev_status_allowed(current_user: User, status: Optional[str]):
             detail=f"Devs can only set bug status to one of {DEV_ALLOWED_BUG_STATUSES}"
         )
 
-DEV_EDITABLE_BUG_UPDATE_FIELDS = {"screenshot_data"}
-
 def _check_dev_can_edit_bug(current_user: User, bug_in: BugUpdate):
-    if current_user.role != "Dev":
-        return
-    provided_fields = set(bug_in.dict(exclude_unset=True).keys())
-    disallowed = provided_fields - DEV_EDITABLE_BUG_UPDATE_FIELDS
-    if disallowed:
+    # Devs are fully read-only on existing bugs. Their only mutation paths are
+    # the dedicated attachments/comments/links/watch endpoints, which have
+    # their own permission checks and don't go through PUT /api/bugs/{id}.
+    if current_user.role == "Dev" and bug_in.dict(exclude_unset=True):
         raise HTTPException(
             status_code=403,
-            detail="Devs have read-only access to bugs; only screenshots can be added."
+            detail="Devs have read-only access to bugs; use the attachment, comment, or link endpoints instead."
         )
+
+def _add_watcher(db: Session, bug_id: int, user_id: int) -> None:
+    exists = db.query(BugWatcher).filter(BugWatcher.bug_id == bug_id, BugWatcher.user_id == user_id).first()
+    if not exists:
+        db.add(BugWatcher(bug_id=bug_id, user_id=user_id))
 
 @app.post("/api/bugs", response_model=BugOut)
 def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "Dev", "QA")), db: Session = Depends(get_db)):
@@ -825,7 +864,8 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
         title=bug_in.title,
         description=bug_in.description,
         expected_behavior=bug_in.expected_behavior,
-        screenshot_url=save_screenshot_data(bug_in.screenshot_data),
+        environment=bug_in.environment,
+        environment_details=bug_in.environment_details,
         status=bug_in.status,
         severity=bug_in.severity,
         priority=bug_in.priority,
@@ -837,6 +877,12 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
     db.add(new_bug)
     db.commit()
     db.refresh(new_bug)
+
+    # Reporter (and owner, if different) auto-watch their own bug
+    _add_watcher(db, new_bug.id, current_user.id)
+    if owner_id != current_user.id:
+        _add_watcher(db, new_bug.id, owner_id)
+    db.commit()
 
     # Log activity
     log = ActivityLog(
@@ -907,8 +953,11 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
         bug.description = bug_in.description
     if bug_in.expected_behavior is not None:
         bug.expected_behavior = bug_in.expected_behavior
-    if bug_in.screenshot_data is not None:
-        bug.screenshot_url = save_screenshot_data(bug_in.screenshot_data)
+    if bug_in.environment is not None:
+        bug.environment = bug_in.environment
+    if bug_in.environment_details is not None:
+        bug.environment_details = bug_in.environment_details
+    reopened = False
     if bug_in.status is not None:
         bug.status = bug_in.status
         # Handle resolution timestamp
@@ -916,6 +965,8 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
             bug.resolved_at = datetime.datetime.utcnow()
         elif bug_in.status not in ["Resolved", "Closed"] and old_status in ["Resolved", "Closed"]:
             bug.resolved_at = None
+            reopened = True
+            bug.reopen_count = (bug.reopen_count or 0) + 1
 
     if bug_in.severity is not None:
         bug.severity = bug_in.severity
@@ -941,7 +992,12 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
 
     # Log status change
     if bug_in.status is not None and old_status != bug.status:
-        activity_type = "bug_resolved" if bug.status in ["Resolved", "Closed"] else "bug_status_change"
+        if reopened:
+            activity_type = "bug_reopened"
+        elif bug.status in ["Resolved", "Closed"]:
+            activity_type = "bug_resolved"
+        else:
+            activity_type = "bug_status_change"
         log = ActivityLog(
             user_id=current_user.id,
             bug_id=bug.id,
@@ -953,7 +1009,8 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
         db.add(log)
         db.commit()
 
-        interested_ids = {bug.reporter_id, bug.owner_id} - {None, current_user.id}
+        watcher_ids = {w.user_id for w in db.query(BugWatcher).filter(BugWatcher.bug_id == bug.id).all()}
+        interested_ids = ({bug.reporter_id, bug.owner_id} | watcher_ids) - {None, current_user.id}
         for recipient_id in interested_ids:
             notify(
                 db,
@@ -996,6 +1053,233 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
 
     return bug
 
+BUG_BULK_UPDATE_ALLOWED_FIELDS = {"status", "owner_id"}
+
+@app.patch("/api/bugs/bulk-update")
+def bulk_update_bugs(
+    bulk_in: BugBulkUpdateIn,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles("Admin", "Dev", "QA")),
+    db: Session = Depends(get_db)
+):
+    unsupported = set(bulk_in.fields.keys()) - BUG_BULK_UPDATE_ALLOWED_FIELDS
+    if unsupported:
+        raise HTTPException(status_code=400, detail=f"Bulk update only supports {sorted(BUG_BULK_UPDATE_ALLOWED_FIELDS)}")
+
+    updated = []
+    failed = []
+    for bug_id in bulk_in.bug_ids:
+        try:
+            bug_update = BugUpdate(**bulk_in.fields)
+            update_bug(bug_id=bug_id, bug_in=bug_update, background_tasks=background_tasks, current_user=current_user, db=db)
+            updated.append(bug_id)
+        except HTTPException as e:
+            failed.append({"bug_id": bug_id, "reason": e.detail})
+
+    return {"updated": updated, "failed": failed}
+
+
+# ==================== BUG ATTACHMENTS ENDPOINTS ====================
+
+@app.post("/api/bugs/{bug_id}/attachments", response_model=BugAttachmentOut)
+def upload_bug_attachment(
+    bug_id: int,
+    attachment_in: BugAttachmentCreate,
+    current_user: User = Depends(require_roles("Admin", "Dev", "QA")),
+    db: Session = Depends(get_db)
+):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+
+    file_url = save_screenshot_data(attachment_in.screenshot_data)
+    if not file_url:
+        raise HTTPException(status_code=400, detail="No screenshot data provided")
+
+    attachment = BugAttachment(
+        bug_id=bug.id,
+        uploaded_by_id=current_user.id,
+        file_url=file_url,
+        original_filename=attachment_in.filename or "screenshot",
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+@app.delete("/api/bugs/{bug_id}/attachments/{attachment_id}")
+def delete_bug_attachment(
+    bug_id: int,
+    attachment_id: int,
+    current_user: User = Depends(require_roles("Admin", "QA")),
+    db: Session = Depends(get_db)
+):
+    attachment = db.query(BugAttachment).filter(
+        BugAttachment.id == attachment_id,
+        BugAttachment.bug_id == bug_id
+    ).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    get_storage_backend().delete(attachment.file_url)
+    db.delete(attachment)
+    db.commit()
+    return {"message": "Attachment deleted"}
+
+
+# ==================== BUG LINKS ENDPOINTS ====================
+
+BUG_LINK_TYPES = ["relates_to", "blocks", "duplicate_of"]
+
+def _bug_link_out(link: BugLink, direction: str, related_bug: Bug) -> BugLinkOut:
+    return BugLinkOut(
+        id=link.id,
+        link_type=link.link_type,
+        direction=direction,
+        related_bug=related_bug,
+        created_at=link.created_at,
+    )
+
+@app.get("/api/bugs/{bug_id}/links", response_model=List[BugLinkOut])
+def list_bug_links(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+
+    results = []
+    for link in db.query(BugLink).filter(BugLink.bug_id == bug_id).all():
+        related = db.query(Bug).filter(Bug.id == link.related_bug_id).first()
+        if related:
+            results.append(_bug_link_out(link, "outgoing", related))
+    for link in db.query(BugLink).filter(BugLink.related_bug_id == bug_id).all():
+        related = db.query(Bug).filter(Bug.id == link.bug_id).first()
+        if related:
+            results.append(_bug_link_out(link, "incoming", related))
+    return results
+
+@app.post("/api/bugs/{bug_id}/links", response_model=BugLinkOut)
+def create_bug_link(
+    bug_id: int,
+    link_in: BugLinkCreate,
+    current_user: User = Depends(require_roles("Admin", "Dev", "QA")),
+    db: Session = Depends(get_db)
+):
+    if link_in.link_type not in BUG_LINK_TYPES:
+        raise HTTPException(status_code=400, detail=f"link_type must be one of {BUG_LINK_TYPES}")
+    if link_in.related_bug_id == bug_id:
+        raise HTTPException(status_code=400, detail="A bug cannot be linked to itself")
+
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+    related_bug = db.query(Bug).filter(Bug.id == link_in.related_bug_id).first()
+    if not related_bug:
+        raise HTTPException(status_code=404, detail="Related bug not found")
+
+    link = BugLink(
+        bug_id=bug_id,
+        related_bug_id=link_in.related_bug_id,
+        link_type=link_in.link_type,
+        created_by_id=current_user.id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return _bug_link_out(link, "outgoing", related_bug)
+
+@app.delete("/api/bugs/{bug_id}/links/{link_id}")
+def delete_bug_link(bug_id: int, link_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    link = db.query(BugLink).filter(BugLink.id == link_id, BugLink.bug_id == bug_id).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    if current_user.role not in ("Admin", "QA") and link.created_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only Admin, QA, or the link's creator can remove it")
+    db.delete(link)
+    db.commit()
+    return {"message": "Link removed"}
+
+
+# ==================== BUG WATCHERS ENDPOINTS ====================
+
+@app.get("/api/bugs/{bug_id}/watchers", response_model=List[BugWatcherOut])
+def list_bug_watchers(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+    return db.query(BugWatcher).filter(BugWatcher.bug_id == bug_id).all()
+
+@app.post("/api/bugs/{bug_id}/watch", response_model=BugWatcherOut)
+def watch_bug(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    bug = db.query(Bug).filter(Bug.id == bug_id).first()
+    if not bug:
+        raise HTTPException(status_code=404, detail="Bug not found")
+
+    existing = db.query(BugWatcher).filter(BugWatcher.bug_id == bug_id, BugWatcher.user_id == current_user.id).first()
+    if existing:
+        return existing
+
+    watcher = BugWatcher(bug_id=bug_id, user_id=current_user.id)
+    db.add(watcher)
+    db.commit()
+    db.refresh(watcher)
+    return watcher
+
+@app.delete("/api/bugs/{bug_id}/watch")
+def unwatch_bug(bug_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    watcher = db.query(BugWatcher).filter(BugWatcher.bug_id == bug_id, BugWatcher.user_id == current_user.id).first()
+    if watcher:
+        db.delete(watcher)
+        db.commit()
+    return {"message": "No longer watching this bug"}
+
+
+# ==================== SAVED BUG FILTERS ENDPOINTS ====================
+
+def _saved_filter_out(saved_filter: SavedBugFilter) -> SavedBugFilterOut:
+    return SavedBugFilterOut(
+        id=saved_filter.id,
+        name=saved_filter.name,
+        filters=json.loads(saved_filter.filters_json),
+        is_shared=saved_filter.is_shared,
+        created_at=saved_filter.created_at,
+    )
+
+@app.get("/api/bugs/saved-filters", response_model=List[SavedBugFilterOut])
+def list_saved_bug_filters(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    filters = db.query(SavedBugFilter).filter(
+        (SavedBugFilter.user_id == current_user.id) | (SavedBugFilter.is_shared == True)
+    ).order_by(SavedBugFilter.created_at.desc()).all()
+    return [_saved_filter_out(f) for f in filters]
+
+@app.post("/api/bugs/saved-filters", response_model=SavedBugFilterOut)
+def create_saved_bug_filter(
+    filter_in: SavedBugFilterCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    is_shared = filter_in.is_shared and current_user.role != "Guest"
+    saved_filter = SavedBugFilter(
+        user_id=current_user.id,
+        name=filter_in.name,
+        filters_json=json.dumps(filter_in.filters),
+        is_shared=is_shared,
+    )
+    db.add(saved_filter)
+    db.commit()
+    db.refresh(saved_filter)
+    return _saved_filter_out(saved_filter)
+
+@app.delete("/api/bugs/saved-filters/{filter_id}")
+def delete_saved_bug_filter(filter_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    saved_filter = db.query(SavedBugFilter).filter(SavedBugFilter.id == filter_id).first()
+    if not saved_filter:
+        raise HTTPException(status_code=404, detail="Saved filter not found")
+    if saved_filter.user_id != current_user.id and current_user.role != "Admin":
+        raise HTTPException(status_code=403, detail="Only the creator or an Admin can delete this saved filter")
+    db.delete(saved_filter)
+    db.commit()
+    return {"message": "Saved filter deleted"}
+
 
 # ==================== COMMENTS ENDPOINTS ====================
 
@@ -1037,7 +1321,8 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
     db.commit()
 
     if bug is not None:
-        interested_ids = {bug.reporter_id, bug.owner_id} - {None, current_user.id}
+        watcher_ids = {w.user_id for w in db.query(BugWatcher).filter(BugWatcher.bug_id == bug.id).all()}
+        interested_ids = ({bug.reporter_id, bug.owner_id} | watcher_ids) - {None, current_user.id}
         for recipient_id in interested_ids:
             notify(
                 db,
@@ -1049,6 +1334,21 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
                 project_id=bug.project_id,
                 bug_id=bug.id,
                 background_tasks=background_tasks,
+            )
+
+        mentioned_ids = set(comment_in.mentioned_user_ids) - interested_ids - {current_user.id}
+        for recipient_id in mentioned_ids:
+            notify(
+                db,
+                recipient_id,
+                notif_type="comment_mention",
+                title=f"{current_user.full_name} mentioned you on {bug.title}",
+                body=f"{current_user.full_name}: {snippet}",
+                link="#bugs",
+                project_id=bug.project_id,
+                bug_id=bug.id,
+                background_tasks=background_tasks,
+                email=True,
             )
     elif comment_in.project_id:
         notify_project_members(
@@ -1072,6 +1372,35 @@ def list_comments(project_id: Optional[int] = None, bug_id: Optional[int] = None
     elif project_id is not None:
         query = query.filter(Comment.project_id == project_id)
     return query.order_by(Comment.created_at.desc()).all()
+
+@app.post("/api/comments/{comment_id}/attachments", response_model=BugAttachmentOut)
+def upload_comment_attachment(
+    comment_id: int,
+    attachment_in: BugAttachmentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if not comment.bug_id:
+        raise HTTPException(status_code=400, detail="Only comments on a bug can have attachments")
+
+    file_url = save_screenshot_data(attachment_in.screenshot_data)
+    if not file_url:
+        raise HTTPException(status_code=400, detail="No screenshot data provided")
+
+    attachment = BugAttachment(
+        bug_id=comment.bug_id,
+        comment_id=comment.id,
+        uploaded_by_id=current_user.id,
+        file_url=file_url,
+        original_filename=attachment_in.filename or "screenshot",
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
 
 
 # ==================== REPORTING ENDPOINTS ====================

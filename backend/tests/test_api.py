@@ -710,11 +710,16 @@ def test_dev_bug_read_only_access():
         resp = client.put(f"/api/bugs/{bug['id']}", json={field: value}, headers=dev_headers)
         assert resp.status_code == 403, f"Dev should not be able to edit {field}"
 
-    # Dev CAN add/replace a screenshot
+    # Dev CAN add an attachment via the dedicated endpoint (not PUT)
     tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-    resp = client.put(f"/api/bugs/{bug['id']}", json={"screenshot_data": tiny_png}, headers=dev_headers)
+    resp = client.post(f"/api/bugs/{bug['id']}/attachments", json={"screenshot_data": tiny_png}, headers=dev_headers)
     assert resp.status_code == 200
-    assert resp.json()["screenshot_url"] is not None
+    assert resp.json()["file_url"] is not None
+
+    # But Dev cannot delete an attachment
+    attachment_id = resp.json()["id"]
+    resp = client.delete(f"/api/bugs/{bug['id']}/attachments/{attachment_id}", headers=dev_headers)
+    assert resp.status_code == 403
 
     # Admin/QA remain fully able to edit
     resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "Closed"}, headers=admin_headers)
@@ -807,4 +812,354 @@ def test_dev_visibility_scoping():
         resp = client.get("/api/bugs", headers=headers)
         seen_bug_ids = [b["id"] for b in resp.json()]
         assert bug_a["id"] in seen_bug_ids
-        assert bug_b["id"] in seen_bug_ids
+
+
+def test_bug_environment_fields_round_trip():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Env Proj", "key": "ENV"}, headers=admin_headers).json()
+
+    bug = client.post("/api/bugs", json={
+        "title": "Env bug",
+        "project_id": project["id"],
+        "environment": "Staging",
+        "environment_details": "Chrome 126 on Windows 11"
+    }, headers=admin_headers).json()
+    assert bug["environment"] == "Staging"
+    assert bug["environment_details"] == "Chrome 126 on Windows 11"
+
+    # Defaults to None when omitted
+    bug2 = client.post("/api/bugs", json={"title": "No env bug", "project_id": project["id"]}, headers=admin_headers).json()
+    assert bug2["environment"] is None
+
+    resp = client.put(f"/api/bugs/{bug2['id']}", json={"environment": "Live", "environment_details": "Prod incident"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["environment"] == "Live"
+    assert resp.json()["environment_details"] == "Prod incident"
+
+
+def test_bug_reopen_tracking():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Reopen Proj", "key": "RPN"}, headers=admin_headers).json()
+    bug = client.post("/api/bugs", json={"title": "Reopen bug", "project_id": project["id"]}, headers=admin_headers).json()
+    assert bug["reopen_count"] == 0
+
+    # Open -> In Progress does not count as a reopen
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "In Progress"}, headers=admin_headers)
+    assert resp.json()["reopen_count"] == 0
+
+    # In Progress -> Resolved does not count as a reopen
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "Resolved"}, headers=admin_headers)
+    assert resp.json()["reopen_count"] == 0
+
+    # Resolved -> Open is a reopen
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "Open"}, headers=admin_headers)
+    assert resp.json()["reopen_count"] == 1
+
+    # Resolve then close then reopen again
+    client.put(f"/api/bugs/{bug['id']}", json={"status": "Closed"}, headers=admin_headers)
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "In Progress"}, headers=admin_headers)
+    assert resp.json()["reopen_count"] == 2
+
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+    activity = client.get(f"/api/admin/users/{me['id']}/activity", headers=admin_headers).json()
+    assert any(a["activity_type"] == "bug_reopened" for a in activity)
+
+
+def test_bug_attachments_multi_upload_list_delete(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Attach Proj", "key": "ATP"}, headers=admin_headers).json()
+    bug = client.post("/api/bugs", json={"title": "Attach bug", "project_id": project["id"]}, headers=admin_headers).json()
+
+    tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
+    ids = []
+    for i in range(2):
+        resp = client.post(f"/api/bugs/{bug['id']}/attachments", json={"screenshot_data": tiny_png, "filename": f"shot{i}.png"}, headers=admin_headers)
+        assert resp.status_code == 200
+        ids.append(resp.json()["id"])
+
+    resp = client.get("/api/bugs", headers=admin_headers)
+    fetched = next(b for b in resp.json() if b["id"] == bug["id"])
+    assert len(fetched["attachments"]) == 2
+
+    resp = client.delete(f"/api/bugs/{bug['id']}/attachments/{ids[0]}", headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/bugs", headers=admin_headers)
+    fetched = next(b for b in resp.json() if b["id"] == bug["id"])
+    assert len(fetched["attachments"]) == 1
+
+    # Rejects non-image data
+    resp = client.post(f"/api/bugs/{bug['id']}/attachments", json={"screenshot_data": "not-an-image"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_bug_links():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Link Proj", "key": "LNK"}, headers=admin_headers).json()
+    bug_a = client.post("/api/bugs", json={"title": "Bug A", "project_id": project["id"]}, headers=admin_headers).json()
+    bug_b = client.post("/api/bugs", json={"title": "Bug B", "project_id": project["id"]}, headers=admin_headers).json()
+
+    resp = client.post(f"/api/bugs/{bug_a['id']}/links", json={"related_bug_id": bug_b["id"], "link_type": "blocks"}, headers=admin_headers)
+    assert resp.status_code == 200
+    link = resp.json()
+    assert link["direction"] == "outgoing"
+    assert link["related_bug"]["id"] == bug_b["id"]
+
+    # A's side shows it as outgoing "blocks"
+    resp = client.get(f"/api/bugs/{bug_a['id']}/links", headers=admin_headers)
+    a_links = resp.json()
+    assert len(a_links) == 1
+    assert a_links[0]["direction"] == "outgoing"
+    assert a_links[0]["link_type"] == "blocks"
+
+    # B's side shows the same link as incoming
+    resp = client.get(f"/api/bugs/{bug_b['id']}/links", headers=admin_headers)
+    b_links = resp.json()
+    assert len(b_links) == 1
+    assert b_links[0]["direction"] == "incoming"
+    assert b_links[0]["related_bug"]["id"] == bug_a["id"]
+
+    # Invalid link_type rejected
+    resp = client.post(f"/api/bugs/{bug_a['id']}/links", json={"related_bug_id": bug_b["id"], "link_type": "nonsense"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+    # Cannot link a bug to itself
+    resp = client.post(f"/api/bugs/{bug_a['id']}/links", json={"related_bug_id": bug_a["id"], "link_type": "relates_to"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+    # Delete permission: a non-creator, non-Admin/QA Dev cannot delete
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "linkdev@test.com", "Link Dev", "Dev")
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": dev_id}, headers=admin_headers)
+    resp = client.delete(f"/api/bugs/{bug_a['id']}/links/{link['id']}", headers=dev_headers)
+    assert resp.status_code == 403
+
+    resp = client.delete(f"/api/bugs/{bug_a['id']}/links/{link['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+
+
+def test_bug_watchers_and_notifications(fake_smtp):
+    admin_headers = _make_admin()
+    watcher_headers, watcher_id = _make_user_with_role(admin_headers, "watcher@test.com", "Watcher", "QA")
+    project = client.post("/api/projects", json={"name": "Watch Proj", "key": "WCH"}, headers=admin_headers).json()
+
+    bug = client.post("/api/bugs", json={"title": "Watch bug", "project_id": project["id"]}, headers=admin_headers).json()
+
+    # Reporter (admin) is auto-watching their own bug
+    resp = client.get(f"/api/bugs/{bug['id']}/watchers", headers=admin_headers)
+    watcher_ids = [w["user"]["id"] for w in resp.json()]
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+    assert me["id"] in watcher_ids
+
+    # Explicit watch/unwatch toggle
+    resp = client.post(f"/api/bugs/{bug['id']}/watch", headers=watcher_headers)
+    assert resp.status_code == 200
+    resp = client.get(f"/api/bugs/{bug['id']}/watchers", headers=admin_headers)
+    assert watcher_id in [w["user"]["id"] for w in resp.json()]
+
+    # A status change now notifies the watcher, who is neither reporter nor owner
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "In Progress"}, headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.get("/api/notifications", headers=watcher_headers)
+    assert any(n["type"] == "bug_status_change" for n in resp.json())
+
+    resp = client.delete(f"/api/bugs/{bug['id']}/watch", headers=watcher_headers)
+    assert resp.status_code == 200
+    resp = client.get(f"/api/bugs/{bug['id']}/watchers", headers=admin_headers)
+    assert watcher_id not in [w["user"]["id"] for w in resp.json()]
+
+
+def test_comment_mentions(fake_smtp):
+    admin_headers = _make_admin()
+    mentioned_headers, mentioned_id = _make_user_with_role(admin_headers, "mentioned@test.com", "Mentioned Person", "QA")
+    project = client.post("/api/projects", json={"name": "Mention Proj", "key": "MNT"}, headers=admin_headers).json()
+    bug = client.post("/api/bugs", json={"title": "Mention bug", "project_id": project["id"]}, headers=admin_headers).json()
+
+    resp = client.post("/api/comments", json={
+        "bug_id": bug["id"],
+        "text": "Hey @Mentioned Person can you take a look?",
+        "mentioned_user_ids": [mentioned_id]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+
+    resp = client.get("/api/notifications", headers=mentioned_headers)
+    assert any(n["type"] == "comment_mention" for n in resp.json())
+
+
+def test_comment_attachments(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "commentattach@test.com", "Comment Attach Dev", "Dev")
+    project = client.post("/api/projects", json={"name": "Comment Attach Proj", "key": "CAP"}, headers=admin_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": dev_id}, headers=admin_headers)
+    bug = client.post("/api/bugs", json={"title": "Comment attach bug", "project_id": project["id"]}, headers=admin_headers).json()
+
+    # Dev can comment (already true) and attach an image to that comment
+    comment = client.post("/api/comments", json={"bug_id": bug["id"], "text": "Here's what I found"}, headers=dev_headers).json()
+
+    tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    resp = client.post(f"/api/comments/{comment['id']}/attachments", json={"screenshot_data": tiny_png, "filename": "evidence.png"}, headers=dev_headers)
+    assert resp.status_code == 200
+    attachment = resp.json()
+    assert attachment["comment_id"] == comment["id"]
+    assert attachment["bug_id"] == bug["id"]
+
+    # The attachment shows up on the bug's aggregate attachments list
+    resp = client.get("/api/bugs", headers=admin_headers)
+    fetched = next(b for b in resp.json() if b["id"] == bug["id"])
+    assert len(fetched["attachments"]) == 1
+    assert fetched["attachments"][0]["comment_id"] == comment["id"]
+
+    # A comment on a project (no bug) cannot take an attachment
+    project_comment = client.post("/api/comments", json={"project_id": project["id"], "text": "Project note"}, headers=admin_headers).json()
+    resp = client.post(f"/api/comments/{project_comment['id']}/attachments", json={"screenshot_data": tiny_png}, headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_saved_bug_filters():
+    admin_headers = _make_admin()
+    guest_headers, _ = _make_user_with_role(admin_headers, "guestfilter@test.com", "Guest Filter", "Guest")
+
+    resp = client.post("/api/bugs/saved-filters", json={
+        "name": "My Critical Bugs",
+        "filters": {"severity": "Critical"},
+        "is_shared": False
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    private_filter = resp.json()
+    assert private_filter["filters"] == {"severity": "Critical"}
+
+    resp = client.post("/api/bugs/saved-filters", json={
+        "name": "Team Blockers",
+        "filters": {"priority": "Urgent"},
+        "is_shared": True
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    shared_filter = resp.json()
+    assert shared_filter["is_shared"] is True
+
+    # Guest attempting to share is silently downgraded to private
+    resp = client.post("/api/bugs/saved-filters", json={
+        "name": "Guest View",
+        "filters": {},
+        "is_shared": True
+    }, headers=guest_headers)
+    assert resp.status_code == 200
+    assert resp.json()["is_shared"] is False
+
+    # Admin sees their own private filter + the shared one, not the guest's
+    resp = client.get("/api/bugs/saved-filters", headers=admin_headers)
+    names = {f["name"] for f in resp.json()}
+    assert "My Critical Bugs" in names
+    assert "Team Blockers" in names
+    assert "Guest View" not in names
+
+    # Guest sees the shared filter + their own private one
+    resp = client.get("/api/bugs/saved-filters", headers=guest_headers)
+    names = {f["name"] for f in resp.json()}
+    assert "Team Blockers" in names
+    assert "Guest View" in names
+    assert "My Critical Bugs" not in names
+
+    # Only the creator or Admin can delete
+    resp = client.delete(f"/api/bugs/saved-filters/{shared_filter['id']}", headers=guest_headers)
+    assert resp.status_code == 403
+    resp = client.delete(f"/api/bugs/saved-filters/{shared_filter['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+
+
+def test_bulk_update_bugs():
+    admin_headers = _make_admin()
+    qa_headers, _ = _make_user_with_role(admin_headers, "bulkqa@test.com", "Bulk QA", "QA")
+    dev_headers, dev_id = _make_user_with_role(admin_headers, "bulkdev@test.com", "Bulk Dev", "Dev")
+
+    project_a = client.post("/api/projects", json={"name": "Bulk Proj A", "key": "BKA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Bulk Proj B", "key": "BKB"}, headers=admin_headers).json()
+    bug_a = client.post("/api/bugs", json={"title": "Bulk bug A", "project_id": project_a["id"]}, headers=admin_headers).json()
+    bug_b = client.post("/api/bugs", json={"title": "Bulk bug B", "project_id": project_b["id"]}, headers=admin_headers).json()
+
+    # Admin/QA bulk status change across bugs in different projects succeeds
+    resp = client.patch("/api/bugs/bulk-update", json={
+        "bug_ids": [bug_a["id"], bug_b["id"]],
+        "fields": {"status": "In Progress"}
+    }, headers=qa_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sorted(body["updated"]) == sorted([bug_a["id"], bug_b["id"]])
+    assert body["failed"] == []
+
+    # Dev's bulk attempt reports every bug as failed (zero editable fields)
+    client.post(f"/api/projects/{project_a['id']}/members", json={"user_id": dev_id}, headers=admin_headers)
+    resp = client.patch("/api/bugs/bulk-update", json={
+        "bug_ids": [bug_a["id"]],
+        "fields": {"status": "Resolved"}
+    }, headers=dev_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updated"] == []
+    assert len(body["failed"]) == 1
+    assert body["failed"][0]["bug_id"] == bug_a["id"]
+
+    # Unsupported field rejected up front
+    resp = client.patch("/api/bugs/bulk-update", json={
+        "bug_ids": [bug_a["id"]],
+        "fields": {"title": "Nope"}
+    }, headers=admin_headers)
+    assert resp.status_code == 400
+
+    # Nonexistent bug id fails gracefully without blocking the valid one
+    resp = client.patch("/api/bugs/bulk-update", json={
+        "bug_ids": [bug_b["id"], 999999],
+        "fields": {"owner_id": -1}
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert bug_b["id"] in body["updated"]
+    assert any(f["bug_id"] == 999999 for f in body["failed"])
+
+
+def test_screenshot_url_migration_backfill(tmp_path):
+    from sqlalchemy import create_engine as _create_engine, text as _text
+    import backend.main as main_module
+
+    db_path = tmp_path / "legacy.db"
+    legacy_engine = _create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    # Build the current schema (including bug_attachments), then add back the
+    # legacy screenshot_url column to simulate a pre-migration database.
+    Base.metadata.create_all(bind=legacy_engine)
+    with legacy_engine.begin() as conn:
+        conn.execute(_text("ALTER TABLE bugs ADD COLUMN screenshot_url VARCHAR"))
+        conn.execute(_text(
+            "INSERT INTO users (id, email, hashed_password, full_name, role, is_active) "
+            "VALUES (1, 'legacy@test.com', 'x', 'Legacy', 'Admin', 1)"
+        ))
+        conn.execute(_text(
+            "INSERT INTO projects (id, name, key, status) VALUES (1, 'Legacy Proj', 'LEG', 'Intake')"
+        ))
+        conn.execute(_text(
+            "INSERT INTO bugs (id, project_id, title, status, severity, priority, bug_type, reporter_id, screenshot_url) "
+            "VALUES (1, 1, 'Legacy bug', 'Open', 'Medium', 'Medium', 'Functional', 1, '/uploads/screenshots/legacy.png')"
+        ))
+
+    original_engine = main_module.engine
+    main_module.engine = legacy_engine
+    try:
+        main_module.ensure_sqlite_schema()
+        main_module.ensure_sqlite_schema()  # idempotency check
+    finally:
+        main_module.engine = original_engine
+
+    with legacy_engine.begin() as conn:
+        bug_columns = {row[1] for row in conn.execute(_text("PRAGMA table_info(bugs)")).fetchall()}
+        assert "screenshot_url" not in bug_columns
+
+        rows = conn.execute(_text("SELECT bug_id, file_url FROM bug_attachments")).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 1
+        assert rows[0][1] == "/uploads/screenshots/legacy.png"

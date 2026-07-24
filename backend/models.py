@@ -68,12 +68,14 @@ class Bug(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     expected_behavior = Column(Text, nullable=True)
-    screenshot_url = Column(String, nullable=True)
+    environment = Column(String, nullable=True)  # Live, Test, Staging
+    environment_details = Column(Text, nullable=True)  # e.g. "Chrome 126 on Windows 11"
     status = Column(String, default="Open")  # Open, In Progress, In QA, Resolved, Closed
     severity = Column(String, default="Medium")  # Low, Medium, High, Critical
     priority = Column(String, default="Medium")  # Low, Medium, High, Urgent
     bug_type = Column(String, default="Functional")  # Functional, Security, Usability, Regression, Performance, Other
     is_blocker = Column(Boolean, default=False)
+    reopen_count = Column(Integer, default=0)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -87,6 +89,7 @@ class Bug(Base):
     reporter = relationship("User", back_populates="reported_bugs", foreign_keys=[reporter_id])
     comments = relationship("Comment", back_populates="bug", cascade="all, delete-orphan")
     activities = relationship("ActivityLog", back_populates="bug", cascade="all, delete-orphan")
+    attachments = relationship("BugAttachment", back_populates="bug", cascade="all, delete-orphan")
 
 
 class Comment(Base):
@@ -103,6 +106,55 @@ class Comment(Base):
     user = relationship("User", back_populates="comments")
     project = relationship("Project", back_populates="comments")
     bug = relationship("Bug", back_populates="comments")
+
+
+class BugAttachment(Base):
+    __tablename__ = "bug_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)
+    comment_id = Column(Integer, ForeignKey("comments.id"), nullable=True)  # null = general bug-level attachment (e.g. filed at creation)
+    uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    file_url = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    bug = relationship("Bug", back_populates="attachments")
+    comment = relationship("Comment")
+    uploaded_by = relationship("User")
+
+
+class BugWatcher(Base):
+    __tablename__ = "bug_watchers"
+    __table_args__ = (UniqueConstraint("bug_id", "user_id", name="uq_bug_watcher"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    bug = relationship("Bug")
+    user = relationship("User")
+
+
+class BugLink(Base):
+    __tablename__ = "bug_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)  # "from" side
+    related_bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=False)  # "to" side
+    link_type = Column(String, nullable=False)  # relates_to, blocks, duplicate_of
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    bug = relationship("Bug", foreign_keys=[bug_id])
+    related_bug = relationship("Bug", foreign_keys=[related_bug_id])
+    created_by = relationship("User")
 
 
 class ActivityLog(Base):
@@ -177,6 +229,20 @@ class ProjectDocument(Base):
     # Relationships
     project = relationship("Project", back_populates="documents")
     uploaded_by = relationship("User")
+
+
+class SavedBugFilter(Base):
+    __tablename__ = "saved_bug_filters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    filters_json = Column(Text, nullable=False)  # JSON blob: project_id, severity, priority, bug_type, owner_id, search
+    is_shared = Column(Boolean, default=False)  # visible to all users, not just the creator
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    user = relationship("User")
 
 
 class Notification(Base):
