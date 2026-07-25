@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   Bug as BugIcon, User as UserIcon, AlertTriangle, X, Search, RotateCcw, CheckSquare, Square,
-  FolderKanban, GitBranch, Flame, Flag, Tag, Tags, Boxes, FilterX, Bookmark, Calendar
+  FolderKanban, GitBranch, Flame, Flag, Tag, Tags, Boxes, FilterX, Bookmark, Calendar,
+  LayoutGrid, List as ListIcon, ChevronRight, ChevronDown
 } from 'lucide-react';
 import { canManageBugs, canEditBugFields } from '../utils/roles';
 import { BugCreateModal } from './BugCreateModal';
@@ -51,6 +52,10 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const [draggedBugId, setDraggedBugId] = useState(null);
   const [dragOverStatus, setDragOverStatus] = useState(null);
 
+  // Layout
+  const [layoutMode, setLayoutMode] = useState(() => localStorage.getItem('tb_bugs_layout') || 'kanban'); // 'kanban' | 'list'
+  const [collapsedStatuses, setCollapsedStatuses] = useState({});
+
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -76,6 +81,14 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     fetchCoreData();
     fetchSavedFilters();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('tb_bugs_layout', layoutMode);
+  }, [layoutMode]);
+
+  const toggleStatusCollapsed = (status) => {
+    setCollapsedStatuses(prev => ({ ...prev, [status]: !prev[status] }));
+  };
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -492,6 +505,15 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           </div>
 
           <div style={styles.toolbarActions}>
+            <button
+              type="button"
+              style={styles.iconActionBtn}
+              title={layoutMode === 'kanban' ? 'Switch to list view' : 'Switch to board view'}
+              aria-label={layoutMode === 'kanban' ? 'Switch to list view' : 'Switch to board view'}
+              onClick={() => setLayoutMode(m => m === 'kanban' ? 'list' : 'kanban')}
+            >
+              {layoutMode === 'kanban' ? <ListIcon size={16} /> : <LayoutGrid size={16} />}
+            </button>
             {(searchQuery || filterSeverity || filterPriority || filterType || filterOwnerId || filterVersionId || filterComponentId || filterLabel) && (
               <button
                 type="button"
@@ -572,6 +594,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
       </div>
 
       {/* Board */}
+      {layoutMode === 'kanban' ? (
       <div style={styles.boardScrollContainer}>
         <div style={styles.board}>
           {BUG_STATUSES.map(status => {
@@ -713,6 +736,85 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
           })}
         </div>
       </div>
+      ) : (
+        <div style={styles.listContainer}>
+          {BUG_STATUSES.map(status => {
+            const statusBugs = filteredBugs.filter(b => b.status === status);
+            const collapsed = !!collapsedStatuses[status];
+            return (
+              <div key={status} className="glass-panel" style={styles.listGroup}>
+                <button style={styles.listGroupHeader} onClick={() => toggleStatusCollapsed(status)}>
+                  {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  <h3 style={styles.columnTitle}>{status}</h3>
+                  <span style={styles.columnCount}>{statusBugs.length}</span>
+                </button>
+                {!collapsed && (
+                  statusBugs.length === 0 ? (
+                    <div style={styles.emptyColumnText}>No bugs in {status}</div>
+                  ) : (
+                    <div style={styles.listRows}>
+                      {statusBugs.map(bug => (
+                        <div
+                          key={bug.id}
+                          style={styles.listRow}
+                          onClick={() => selectMode ? toggleBugSelection(bug.id) : handleOpenDetail(bug)}
+                        >
+                          {selectMode && (
+                            <input
+                              type="checkbox"
+                              checked={selectedBugIds.includes(bug.id)}
+                              onChange={() => {}}
+                              onClick={(e) => { e.stopPropagation(); toggleBugSelection(bug.id); }}
+                              style={styles.selectCheckbox}
+                            />
+                          )}
+                          <span style={styles.cardKey}>{formatBugKey(bug)}</span>
+                          <span style={{
+                            ...styles.sevBadge,
+                            background: `var(--sev-${bug.severity.toLowerCase()})`,
+                            color: '#12100d'
+                          }}>
+                            {bug.severity}
+                          </span>
+                          {bug.priority && (
+                            <span style={{
+                              ...styles.sevBadge,
+                              background: `var(${PRIORITY_COLOR_VAR[bug.priority] || '--text-subtle'})`,
+                              color: '#12100d'
+                            }}>
+                              {bug.priority}
+                            </span>
+                          )}
+                          <span style={styles.listRowName}>{bug.title}</span>
+                          {bug.due_date && (
+                            <span style={{ ...styles.dueDateTag, ...(isBugOverdue(bug) ? styles.dueDateTagOverdue : {}) }}>
+                              <Calendar size={9} style={{ marginRight: '2px' }} />
+                              {isBugOverdue(bug) ? 'Overdue ' : 'Due '}{formatDueDate(bug.due_date)}
+                            </span>
+                          )}
+                          {['Resolved', 'Closed'].includes(bug.status) && bug.resolution && (
+                            <span style={styles.resolutionTag}>{bug.resolution}</span>
+                          )}
+                          <span style={styles.listRowMeta}>
+                            <UserIcon size={12} style={{ marginRight: '4px' }} />
+                            {bug.owner ? bug.owner.full_name : 'Unassigned'}
+                          </span>
+                          {bug.is_blocker && (
+                            <span style={styles.blockerTag} className="animate-blink-red">
+                              <AlertTriangle size={10} style={{ marginRight: '2px' }} />
+                              BLOCKER
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {selectMode && selectedBugIds.length > 0 && (
         <div style={styles.bulkActionBar}>
@@ -978,6 +1080,58 @@ const styles = {
     gap: '16px',
     minWidth: '1100px',
     width: '100%',
+  },
+  listContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+  },
+  listGroup: {
+    padding: '4px 0',
+  },
+  listGroupHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    width: '100%',
+    background: 'none',
+    border: 'none',
+    padding: '12px 16px',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
+  listRows: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  listRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '10px 16px',
+    borderTop: '1px solid var(--glass-border)',
+    cursor: 'pointer',
+    flexWrap: 'wrap',
+  },
+  listRowName: {
+    flex: 1,
+    minWidth: '120px',
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--text-strong)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  listRowMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    flexShrink: 0,
   },
   column: {
     flex: 1,

@@ -23,6 +23,12 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const deriveTitleFromFilename = (filename) => {
+  const base = filename.replace(/\.[^/.]+$/, '');
+  const spaced = base.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return spaced.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+};
+
 export const ProjectDetailView = ({
   project,
   users,
@@ -68,6 +74,7 @@ export const ProjectDetailView = ({
   const [projectDocuments, setProjectDocuments] = useState([]);
   const [docTitle, setDocTitle] = useState('');
   const [docType, setDocType] = useState('BRD');
+  const [docVersionId, setDocVersionId] = useState('');
   const [docFile, setDocFile] = useState(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
@@ -90,6 +97,7 @@ export const ProjectDetailView = ({
     setNewVersionChangelogFile(null);
     setDocTitle('');
     setDocType('BRD');
+    setDocVersionId('');
     setDocFile(null);
     setNewCommentText('');
     setMentionedUserIds([]);
@@ -224,9 +232,15 @@ export const ProjectDetailView = ({
     if (!docFile || !docTitle.trim()) return;
     try {
       setUploadingDoc(true);
-      await uploadDocumentToProject(project.id, { file: docFile, title: docTitle.trim(), docType });
+      await uploadDocumentToProject(project.id, {
+        file: docFile,
+        title: docTitle.trim(),
+        docType,
+        versionId: docVersionId || undefined,
+      });
       setDocTitle('');
       setDocType('BRD');
+      setDocVersionId('');
       setDocFile(null);
       fetchProjectDocuments();
       showSuccess("Document uploaded successfully.");
@@ -702,34 +716,42 @@ export const ProjectDetailView = ({
               <FileText size={16} style={{ marginRight: '6px' }} />
               Project Documents ({projectDocuments.length})
             </h4>
-            <div style={styles.teamList}>
-              {projectDocuments.length === 0 ? (
-                <p style={styles.noComments}>No documents uploaded yet.</p>
-              ) : (
-                projectDocuments.map(doc => (
-                  <div key={doc.id} style={styles.docRow}>
-                    <span style={styles.docTypeBadge}>{doc.doc_type}</span>
-                    <div style={styles.docInfo}>
-                      <span style={styles.teamName}>{doc.title}</span>
-                      <span style={styles.docMeta}>
-                        {doc.original_filename} · {formatFileSize(doc.file_size)} · {doc.uploaded_by.full_name}
-                        {doc.version_id && projectVersions.some(v => v.id === doc.version_id) && (
-                          <> · {projectVersions.find(v => v.id === doc.version_id).version_name}</>
+            {projectDocuments.length === 0 ? (
+              <p style={styles.noComments}>No documents uploaded yet.</p>
+            ) : (
+              [
+                { key: 'unversioned', label: 'General (No Version)', docs: projectDocuments.filter(d => !d.version_id || !projectVersions.some(v => v.id === d.version_id)) },
+                ...projectVersions.map(v => ({ key: v.id, label: v.version_name, docs: projectDocuments.filter(d => d.version_id === v.id) })),
+              ].filter(group => group.docs.length > 0).map(group => (
+                <div key={group.key} style={styles.docVersionGroup}>
+                  <h5 style={styles.docVersionGroupTitle}>
+                    <GitBranch size={12} style={{ marginRight: '5px' }} />
+                    {group.label} ({group.docs.length})
+                  </h5>
+                  <div style={styles.teamList}>
+                    {group.docs.map(doc => (
+                      <div key={doc.id} style={styles.docRow}>
+                        <span style={styles.docTypeBadge}>{doc.doc_type}</span>
+                        <div style={styles.docInfo}>
+                          <span style={styles.teamName}>{doc.title}</span>
+                          <span style={styles.docMeta}>
+                            {doc.original_filename} · {formatFileSize(doc.file_size)} · {doc.uploaded_by.full_name}
+                          </span>
+                        </div>
+                        <a href={getFileUrl(doc.file_url)} target="_blank" rel="noreferrer" style={styles.docActionBtn} title="Download">
+                          <Download size={14} />
+                        </a>
+                        {canEdit && (
+                          <button style={styles.teamRemoveBtn} onClick={() => handleDeleteDocument(doc.id)} title="Delete document">
+                            <Trash2 size={14} />
+                          </button>
                         )}
-                      </span>
-                    </div>
-                    <a href={getFileUrl(doc.file_url)} target="_blank" rel="noreferrer" style={styles.docActionBtn} title="Download">
-                      <Download size={14} />
-                    </a>
-                    {canEdit && (
-                      <button style={styles.teamRemoveBtn} onClick={() => handleDeleteDocument(doc.id)} title="Delete document">
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                      </div>
+                    ))}
                   </div>
-                ))
-              )}
-            </div>
+                </div>
+              ))
+            )}
             {canEdit && (
               <form onSubmit={handleUploadDocument} style={styles.docUploadForm}>
                 <div style={styles.row}>
@@ -745,10 +767,24 @@ export const ProjectDetailView = ({
                     {documentTypes.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
+                {projectVersions.length > 0 && (
+                  <div style={styles.row}>
+                    <select value={docVersionId} onChange={(e) => setDocVersionId(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
+                      <option value="">No specific version</option>
+                      {projectVersions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
+                    </select>
+                  </div>
+                )}
                 <div style={styles.row}>
                   <input
                     type="file"
-                    onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      setDocFile(file);
+                      if (file && !docTitle.trim()) {
+                        setDocTitle(deriveTitleFromFilename(file.name));
+                      }
+                    }}
                     style={styles.docFileInput}
                     accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
                   />
@@ -1142,6 +1178,19 @@ const styles = {
   },
 
   // Documents section
+  docVersionGroup: {
+    marginBottom: '16px',
+  },
+  docVersionGroupTitle: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '12px',
+    fontWeight: '700',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    marginBottom: '8px',
+  },
   docRow: {
     display: 'flex',
     alignItems: 'center',

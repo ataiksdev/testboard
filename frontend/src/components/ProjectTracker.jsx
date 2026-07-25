@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   FolderKanban, Plus, User as UserIcon,
-  ChevronRight, X, Upload, Archive, ArchiveRestore
+  ChevronRight, ChevronDown, X, Upload, Archive, ArchiveRestore,
+  LayoutGrid, List as ListIcon, GitBranch
 } from 'lucide-react';
 import { canManageProjects, canManageMembers } from '../utils/roles';
 import { ProjectDetailView } from './ProjectDetailView';
@@ -13,6 +14,12 @@ const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Addendum", "
 
 const deriveProjectKey = (name) => name.replace(/[^a-zA-Z]/g, '').slice(0, 4).toUpperCase();
 
+const deriveTitleFromFilename = (filename) => {
+  const base = filename.replace(/\.[^/.]+$/, '');
+  const spaced = base.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return spaced.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+};
+
 export const ProjectTracker = ({ onSelectProject }) => {
   const [projects, setProjects] = useState([]);
   const [bugs, setBugs] = useState([]);
@@ -22,6 +29,8 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [draggedProjectId, setDraggedProjectId] = useState(null);
   const [dragOverStatus, setDragOverStatus] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [layoutMode, setLayoutMode] = useState(() => localStorage.getItem('tb_projects_layout') || 'kanban'); // 'kanban' | 'list'
+  const [collapsedStatuses, setCollapsedStatuses] = useState({});
 
   const [viewMode, setViewMode] = useState('board'); // 'board' | 'detail'
   const [activeProject, setActiveProject] = useState(null);
@@ -35,6 +44,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
   const [projLead, setProjLead] = useState('');
   const [projPmLead, setProjPmLead] = useState('');
   const [projVendor, setProjVendor] = useState('');
+  const [projInitialVersion, setProjInitialVersion] = useState('');
   const [creatingProject, setCreatingProject] = useState(false);
 
   // Staged documents to upload right after project creation
@@ -53,6 +63,14 @@ export const ProjectTracker = ({ onSelectProject }) => {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('tb_projects_layout', layoutMode);
+  }, [layoutMode]);
+
+  const toggleStatusCollapsed = (status) => {
+    setCollapsedStatuses(prev => ({ ...prev, [status]: !prev[status] }));
+  };
 
   const fetchData = async () => {
     try {
@@ -103,6 +121,7 @@ export const ProjectTracker = ({ onSelectProject }) => {
     setProjStatus('Intake');
     setProjVendor('');
     setProjPmLead('');
+    setProjInitialVersion('');
     setStagedDocs([]);
     setNewDocFile(null);
     setNewDocTitle('');
@@ -171,6 +190,14 @@ export const ProjectTracker = ({ onSelectProject }) => {
       }
 
       const project = await response.json();
+
+      if (projInitialVersion.trim()) {
+        await fetch(`${API_URL}/api/projects/${project.id}/versions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ version_name: projInitialVersion.trim(), status: 'Planning' })
+        });
+      }
 
       for (const doc of stagedDocs) {
         await uploadDocumentToProject(project.id, doc);
@@ -282,6 +309,14 @@ export const ProjectTracker = ({ onSelectProject }) => {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button
+              style={styles.archiveToggleBtn}
+              onClick={() => setLayoutMode(m => m === 'kanban' ? 'list' : 'kanban')}
+              title={layoutMode === 'kanban' ? 'Switch to list view' : 'Switch to board view'}
+              aria-label={layoutMode === 'kanban' ? 'Switch to list view' : 'Switch to board view'}
+            >
+              {layoutMode === 'kanban' ? <ListIcon size={16} /> : <LayoutGrid size={16} />}
+            </button>
+            <button
               style={{ ...styles.archiveToggleBtn, ...(showArchived ? styles.archiveToggleBtnActive : {}) }}
               onClick={() => setShowArchived(v => !v)}
               title={showArchived ? 'Hide archived projects' : 'Show archived projects'}
@@ -305,103 +340,156 @@ export const ProjectTracker = ({ onSelectProject }) => {
       </div>
 
       {/* Board Layout */}
-      <div style={styles.boardScrollContainer}>
-        <div style={{ ...styles.board, minWidth: `${visibleStatuses.length * 220}px` }}>
+      {layoutMode === 'kanban' ? (
+        <div style={styles.boardScrollContainer}>
+          <div style={{ ...styles.board, minWidth: `${visibleStatuses.length * 220}px` }}>
+            {visibleStatuses.map(status => {
+              const statusProjects = projects.filter(p => p.status === status);
+              return (
+                <div
+                  key={status}
+                  style={{
+                    ...styles.column,
+                    ...(dragOverStatus === status ? styles.columnDragOver : {}),
+                  }}
+                  className="glass-panel"
+                  onDragOver={(e) => {
+                    if (!canEdit) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDragOverStatus(status);
+                  }}
+                  onDragLeave={() => setDragOverStatus(current => current === status ? null : current)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverStatus(null);
+                    if (!canEdit) return;
+                    const projectId = parseInt(e.dataTransfer.getData('text/plain'), 10) || draggedProjectId;
+                    if (projectId) handleProjectDrop(projectId, status);
+                  }}
+                >
+                  <div style={styles.columnHeader}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ ...styles.columnDot, background: `var(--status-${status.toLowerCase()})` }} />
+                      <h3 style={styles.columnTitle}>{status}</h3>
+                    </div>
+                    <span style={styles.columnCount}>{statusProjects.length}</span>
+                  </div>
+
+                  <div style={styles.columnContent}>
+                    {statusProjects.map(project => {
+                      const stats = getProjectStats(project.id);
+                      return (
+                        <div
+                          key={project.id}
+                          style={{
+                            ...styles.card,
+                            ...(canEdit ? styles.cardDraggable : {}),
+                            opacity: draggedProjectId === project.id ? 0.4 : 1,
+                          }}
+                          draggable={canEdit}
+                          onDragStart={(e) => {
+                            setDraggedProjectId(project.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', String(project.id));
+                          }}
+                          onDragEnd={() => { setDraggedProjectId(null); setDragOverStatus(null); }}
+                          onClick={() => handleOpenDetail(project)}
+                          className="animate-slide-up"
+                        >
+                          <div style={styles.cardHeader}>
+                            <span style={styles.cardKey}>{project.key}</span>
+                            <span style={styles.cardLead}>
+                              <UserIcon size={12} style={{ marginRight: '4px' }} />
+                              {project.lead ? project.lead.full_name : 'Unassigned'}
+                            </span>
+                          </div>
+                          <h4 style={styles.cardName}>{project.name}</h4>
+                          <p style={styles.cardDesc}>
+                            {project.description && project.description.length > 60
+                              ? project.description.slice(0, 60) + '...'
+                              : project.description || 'No description provided.'}
+                          </p>
+
+                          <div style={styles.cardFooter}>
+                            <button
+                              style={{ ...styles.cardStatBtn, color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}
+                              onClick={(e) => { e.stopPropagation(); onSelectProject(project); }}
+                              title="Go to Bugs Board"
+                            >
+                              Bugs: <strong>{stats.open}</strong>/{stats.total}
+                              <ChevronRight size={12} />
+                            </button>
+                            {stats.blockers > 0 && (
+                              <span style={styles.blockerBadge} className="animate-blink-red">
+                                {stats.blockers} Blocker{stats.blockers > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {statusProjects.length === 0 && (
+                      <div style={styles.emptyColumnText}>No projects in this stage</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div style={styles.listContainer}>
           {visibleStatuses.map(status => {
             const statusProjects = projects.filter(p => p.status === status);
+            const collapsed = !!collapsedStatuses[status];
             return (
-              <div
-                key={status}
-                style={{
-                  ...styles.column,
-                  ...(dragOverStatus === status ? styles.columnDragOver : {}),
-                }}
-                className="glass-panel"
-                onDragOver={(e) => {
-                  if (!canEdit) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  setDragOverStatus(status);
-                }}
-                onDragLeave={() => setDragOverStatus(current => current === status ? null : current)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOverStatus(null);
-                  if (!canEdit) return;
-                  const projectId = parseInt(e.dataTransfer.getData('text/plain'), 10) || draggedProjectId;
-                  if (projectId) handleProjectDrop(projectId, status);
-                }}
-              >
-                <div style={styles.columnHeader}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ ...styles.columnDot, background: `var(--status-${status.toLowerCase()})` }} />
-                    <h3 style={styles.columnTitle}>{status}</h3>
-                  </div>
+              <div key={status} className="glass-panel" style={styles.listGroup}>
+                <button style={styles.listGroupHeader} onClick={() => toggleStatusCollapsed(status)}>
+                  {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  <span style={{ ...styles.columnDot, background: `var(--status-${status.toLowerCase()})` }} />
+                  <h3 style={styles.columnTitle}>{status}</h3>
                   <span style={styles.columnCount}>{statusProjects.length}</span>
-                </div>
-
-                <div style={styles.columnContent}>
-                  {statusProjects.map(project => {
-                    const stats = getProjectStats(project.id);
-                    return (
-                      <div
-                        key={project.id}
-                        style={{
-                          ...styles.card,
-                          ...(canEdit ? styles.cardDraggable : {}),
-                          opacity: draggedProjectId === project.id ? 0.4 : 1,
-                        }}
-                        draggable={canEdit}
-                        onDragStart={(e) => {
-                          setDraggedProjectId(project.id);
-                          e.dataTransfer.effectAllowed = 'move';
-                          e.dataTransfer.setData('text/plain', String(project.id));
-                        }}
-                        onDragEnd={() => { setDraggedProjectId(null); setDragOverStatus(null); }}
-                        onClick={() => handleOpenDetail(project)}
-                        className="animate-slide-up"
-                      >
-                        <div style={styles.cardHeader}>
-                          <span style={styles.cardKey}>{project.key}</span>
-                          <span style={styles.cardLead}>
-                            <UserIcon size={12} style={{ marginRight: '4px' }} />
-                            {project.lead ? project.lead.full_name : 'Unassigned'}
-                          </span>
-                        </div>
-                        <h4 style={styles.cardName}>{project.name}</h4>
-                        <p style={styles.cardDesc}>
-                          {project.description && project.description.length > 60
-                            ? project.description.slice(0, 60) + '...'
-                            : project.description || 'No description provided.'}
-                        </p>
-
-                        <div style={styles.cardFooter}>
-                          <button
-                            style={{ ...styles.cardStatBtn, color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}
-                            onClick={(e) => { e.stopPropagation(); onSelectProject(project); }}
-                            title="Go to Bugs Board"
-                          >
-                            Bugs: <strong>{stats.open}</strong>/{stats.total}
-                            <ChevronRight size={12} />
-                          </button>
-                          {stats.blockers > 0 && (
-                            <span style={styles.blockerBadge} className="animate-blink-red">
-                              {stats.blockers} Blocker{stats.blockers > 1 ? 's' : ''}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {statusProjects.length === 0 && (
+                </button>
+                {!collapsed && (
+                  statusProjects.length === 0 ? (
                     <div style={styles.emptyColumnText}>No projects in this stage</div>
-                  )}
-                </div>
+                  ) : (
+                    <div style={styles.listRows}>
+                      {statusProjects.map(project => {
+                        const stats = getProjectStats(project.id);
+                        return (
+                          <div key={project.id} style={styles.listRow} onClick={() => handleOpenDetail(project)}>
+                            <span style={styles.cardKey}>{project.key}</span>
+                            <span style={styles.listRowName}>{project.name}</span>
+                            <span style={styles.listRowMeta}>
+                              <UserIcon size={12} style={{ marginRight: '4px' }} />
+                              {project.lead ? project.lead.full_name : 'Unassigned'}
+                            </span>
+                            <button
+                              style={{ ...styles.cardStatBtn, color: stats.open > 0 ? 'var(--primary-neon)' : 'var(--text-muted)' }}
+                              onClick={(e) => { e.stopPropagation(); onSelectProject(project); }}
+                              title="Go to Bugs Board"
+                            >
+                              Bugs: <strong>{stats.open}</strong>/{stats.total}
+                              <ChevronRight size={12} />
+                            </button>
+                            {stats.blockers > 0 && (
+                              <span style={styles.blockerBadge} className="animate-blink-red">
+                                {stats.blockers} Blocker{stats.blockers > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                )}
               </div>
             );
           })}
         </div>
-      </div>
+      )}
 
       {/* CREATE PROJECT MODAL */}
       {showCreateModal && (
@@ -461,15 +549,27 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 </div>
               </div>
 
-              <div style={styles.inputGroup}>
-                <label style={styles.modalLabel}>Vendor/Developer (optional)</label>
-                <input
-                  type="text"
-                  value={projVendor}
-                  onChange={(e) => setProjVendor(e.target.value)}
-                  placeholder="e.g. Acme Software Inc."
-                  style={styles.modalInput}
-                />
+              <div style={styles.row}>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Vendor/Developer (optional)</label>
+                  <input
+                    type="text"
+                    value={projVendor}
+                    onChange={(e) => setProjVendor(e.target.value)}
+                    placeholder="e.g. Acme Software Inc."
+                    style={styles.modalInput}
+                  />
+                </div>
+                <div style={{ ...styles.inputGroup, flex: 1 }}>
+                  <label style={styles.modalLabel}>Initial Version (optional)</label>
+                  <input
+                    type="text"
+                    value={projInitialVersion}
+                    onChange={(e) => setProjInitialVersion(e.target.value)}
+                    placeholder="e.g. v1.0, build 42"
+                    style={styles.modalInput}
+                  />
+                </div>
               </div>
 
               <div style={styles.row}>
@@ -546,7 +646,13 @@ export const ProjectTracker = ({ onSelectProject }) => {
                 <div style={styles.row}>
                   <input
                     type="file"
-                    onChange={(e) => setNewDocFile(e.target.files?.[0] || null)}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      setNewDocFile(file);
+                      if (file && !newDocTitle.trim()) {
+                        setNewDocTitle(deriveTitleFromFilename(file.name));
+                      }
+                    }}
                     style={styles.docFileInput}
                     accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
                   />
@@ -647,6 +753,57 @@ const styles = {
     display: 'flex',
     gap: '16px',
     width: '100%',
+  },
+  listContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+  },
+  listGroup: {
+    padding: '4px 0',
+  },
+  listGroupHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    width: '100%',
+    background: 'none',
+    border: 'none',
+    padding: '12px 16px',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
+  listRows: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  listRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '10px 16px',
+    borderTop: '1px solid var(--glass-border)',
+    cursor: 'pointer',
+    transition: 'background 0.15s ease',
+  },
+  listRowName: {
+    flex: 1,
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--text-strong)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  listRowMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    flexShrink: 0,
   },
   column: {
     flex: 1,
