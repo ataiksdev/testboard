@@ -57,6 +57,7 @@
   /* Bauhaus geometric accent colors (constant across themes) */
   --accent-mustard: #d9a62e;
   --accent-rust: #c1440e;
+  --accent-blue: #2f6f8f;
 
   /* Fonts */
   --font-main: 'Archivo', sans-serif;

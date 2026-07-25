@@ -238,6 +238,63 @@ def test_role_permission_matrix():
     assert resp.status_code == 200
 
 
+def test_ba_role_permissions(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    ba_headers, ba_id = _make_user_with_role(admin_headers, "ba@test.com", "BA User", "BA")
+
+    # BA can create and edit projects
+    resp = client.post("/api/projects", json={"name": "BA Project", "key": "BAP"}, headers=ba_headers)
+    assert resp.status_code == 200
+    project = resp.json()
+
+    resp = client.put(f"/api/projects/{project['id']}", json={"status": "Reviewing"}, headers=ba_headers)
+    assert resp.status_code == 200
+
+    # BA can add a version
+    resp = client.post(f"/api/projects/{project['id']}/versions", json={"version_name": "v1.0"}, headers=ba_headers)
+    assert resp.status_code == 200
+
+    # BA can upload and delete documentation
+    resp = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=ba_headers,
+        data={"title": "BA BRD", "doc_type": "BRD"},
+        files={"file": ("brd.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")}
+    )
+    assert resp.status_code == 200
+    doc = resp.json()
+    resp = client.delete(f"/api/projects/{project['id']}/documents/{doc['id']}", headers=ba_headers)
+    assert resp.status_code == 200
+
+    # BA can view bugs (read access) but cannot create or edit them
+    resp = client.get(f"/api/bugs?project_id={project['id']}", headers=ba_headers)
+    assert resp.status_code == 200
+
+    resp = client.post("/api/bugs", json={"title": "BA bug", "project_id": project["id"]}, headers=ba_headers)
+    assert resp.status_code == 403
+
+    admin_bug = client.post("/api/bugs", json={"title": "Admin bug", "project_id": project["id"]}, headers=admin_headers).json()
+    resp = client.put(f"/api/bugs/{admin_bug['id']}", json={"status": "In Progress"}, headers=ba_headers)
+    assert resp.status_code == 403
+
+    # BA can still comment on bugs
+    resp = client.post("/api/comments", json={"bug_id": admin_bug["id"], "text": "BA comment"}, headers=ba_headers)
+    assert resp.status_code == 200
+
+    # BA cannot manage project membership (Admin/PM only)
+    resp = client.post(f"/api/projects/{project['id']}/members", json={"user_id": ba_id}, headers=ba_headers)
+    assert resp.status_code == 403
+
+    # ...but Admin/PM can add a BA as a project member (on a project BA isn't
+    # already a member of via self-assigned lead on creation, above)
+    other_project = client.post("/api/projects", json={"name": "Admin Project For BA", "key": "APFB"}, headers=admin_headers).json()
+    resp = client.post(f"/api/projects/{other_project['id']}/members", json={"user_id": ba_id}, headers=admin_headers)
+    assert resp.status_code == 200
+
+
 def test_project_membership_endpoints():
     admin_headers = _make_admin()
     dev_headers, dev_id = _make_user_with_role(admin_headers, "dev2@test.com", "Dev Two", "Dev")

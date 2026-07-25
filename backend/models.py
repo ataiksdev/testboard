@@ -10,7 +10,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
-    role = Column(String, default="Pending")  # Pending, Admin, PM, Dev, QA, Guest
+    role = Column(String, default="Pending")  # Pending, Admin, PM, Dev, QA, BA, Guest
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 

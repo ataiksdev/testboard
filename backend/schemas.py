@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict
 from datetime import datetime, date
 
-ASSIGNABLE_ROLES = ["Admin", "PM", "Dev", "QA", "Guest"]
+ASSIGNABLE_ROLES = ["Admin", "PM", "BA", "Dev", "QA", "Guest"]
 
 # Token Schemas
 class Token(BaseModel):

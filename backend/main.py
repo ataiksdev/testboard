@@ -240,15 +240,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def require_active_user(db: Session, user_id: int, detail: str = "User not found") -> User:
+def require_active_user(db: Session, user_id: int, detail: str = "User not found", roles: Optional[List[str]] = None) -> User:
     user = db.query(User).filter(
         User.id == user_id,
-        User.role.in_(["Admin", "PM", "Dev", "QA"]),
+        User.role.in_(roles or ["Admin", "PM", "Dev", "QA"]),
         User.is_active == True
     ).first()
     if not user:
         raise HTTPException(status_code=404, detail=detail)
     return user
+
+# Project lead / PM lead / team membership are project-management concepts BA
+# also participates in; bug ownership (the default roles above) stays
+# Admin/PM/Dev/QA since BA doesn't do bug management.
+PROJECT_ROLE_ASSIGNEES = ["Admin", "PM", "Dev", "QA", "BA"]
 
 def ensure_project_membership(db: Session, project_id: int, user_id: int):
     exists = db.query(ProjectMember).filter(
@@ -616,7 +621,7 @@ def get_all_active_users(current_user: User = Depends(get_current_user), db: Ses
 # ==================== PROJECTS ENDPOINTS ====================
 
 @app.post("/api/projects", response_model=ProjectOut)
-def create_project(project_in: ProjectCreate, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+def create_project(project_in: ProjectCreate, current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")), db: Session = Depends(get_db)):
     # Check key uniqueness
     dup_key = db.query(Project).filter(Project.key == project_in.key.upper()).first()
     if dup_key:
@@ -628,9 +633,9 @@ def create_project(project_in: ProjectCreate, current_user: User = Depends(requi
         raise HTTPException(status_code=400, detail="Project name already exists")
 
     lead_id = project_in.lead_id or current_user.id
-    require_active_user(db, lead_id, detail="Project lead not found")
+    require_active_user(db, lead_id, detail="Project lead not found", roles=PROJECT_ROLE_ASSIGNEES)
     if project_in.pm_lead_id is not None:
-        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found")
+        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found", roles=PROJECT_ROLE_ASSIGNEES)
 
     new_project = Project(
         name=project_in.name,
@@ -687,7 +692,7 @@ def get_project(project_id: int, current_user: User = Depends(get_current_user),
     return project
 
 @app.put("/api/projects/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, project_in: ProjectUpdate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+def update_project(project_id: int, project_in: ProjectUpdate, background_tasks: BackgroundTasks, current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")), db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -706,10 +711,10 @@ def update_project(project_id: int, project_in: ProjectUpdate, background_tasks:
     if project_in.vendor is not None:
         project.vendor = project_in.vendor
     if project_in.lead_id is not None:
-        require_active_user(db, project_in.lead_id, detail="Project lead not found")
+        require_active_user(db, project_in.lead_id, detail="Project lead not found", roles=PROJECT_ROLE_ASSIGNEES)
         project.lead_id = project_in.lead_id
     if project_in.pm_lead_id is not None:
-        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found")
+        require_active_user(db, project_in.pm_lead_id, detail="PM lead not found", roles=PROJECT_ROLE_ASSIGNEES)
         project.pm_lead_id = project_in.pm_lead_id
 
     db.commit()
@@ -749,7 +754,7 @@ def update_project(project_id: int, project_in: ProjectUpdate, background_tasks:
 # ==================== VERSIONS ENDPOINTS ====================
 
 @app.post("/api/projects/{project_id}/versions", response_model=VersionOut)
-def create_version(project_id: int, version_in: VersionBase, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+def create_version(project_id: int, version_in: VersionBase, current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")), db: Session = Depends(get_db)):
     # Verify project exists
     require_project(db, project_id)
         
@@ -773,7 +778,7 @@ def list_versions(project_id: int, current_user: User = Depends(get_current_user
 # ==================== COMPONENTS ENDPOINTS ====================
 
 @app.post("/api/projects/{project_id}/components", response_model=ComponentOut)
-def create_component(project_id: int, component_in: ComponentBase, current_user: User = Depends(require_roles("Admin", "PM", "QA")), db: Session = Depends(get_db)):
+def create_component(project_id: int, component_in: ComponentBase, current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")), db: Session = Depends(get_db)):
     require_project(db, project_id)
 
     new_component = Component(
@@ -801,7 +806,7 @@ def list_project_members(project_id: int, current_user: User = Depends(get_curre
 @app.post("/api/projects/{project_id}/members", response_model=ProjectMemberOut)
 def add_project_member(project_id: int, member_in: ProjectMemberCreate, current_user: User = Depends(require_roles("Admin", "PM")), db: Session = Depends(get_db)):
     require_project(db, project_id)
-    require_active_user(db, member_in.user_id, detail="User not found")
+    require_active_user(db, member_in.user_id, detail="User not found", roles=PROJECT_ROLE_ASSIGNEES)
 
     existing = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
@@ -851,7 +856,7 @@ async def upload_project_document(
     doc_type: str = Form("Other"),
     version_id: Optional[int] = Form(None),
     file: UploadFile = File(...),
-    current_user: User = Depends(require_roles("Admin", "PM", "QA")),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")),
     db: Session = Depends(get_db)
 ):
     project = require_project(db, project_id)
@@ -914,7 +919,7 @@ async def upload_project_document(
 def delete_project_document(
     project_id: int,
     document_id: int,
-    current_user: User = Depends(require_roles("Admin", "PM", "QA")),
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")),
     db: Session = Depends(get_db)
 ):
     document = db.query(ProjectDocument).filter(
