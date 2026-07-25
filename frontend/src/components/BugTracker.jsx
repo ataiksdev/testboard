@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import {
   Bug as BugIcon, User as UserIcon, AlertTriangle, X, Search, RotateCcw, CheckSquare, Square,
-  FolderKanban, GitBranch, Flame, Flag, Tag, Tags, Boxes, FilterX, Bookmark
+  FolderKanban, GitBranch, Flame, Flag, Tag, Tags, Boxes, FilterX, Bookmark, Calendar
 } from 'lucide-react';
 import { canManageBugs, canEditBugFields } from '../utils/roles';
 import { BugCreateModal } from './BugCreateModal';
@@ -78,8 +78,12 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   }, []);
 
   useEffect(() => {
-    fetchBugs();
-  }, [filterProjectId]);
+    const handle = setTimeout(() => {
+      fetchBugs();
+    }, searchQuery.trim() ? 300 : 0);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterProjectId, searchQuery]);
 
   useEffect(() => {
     if (filterProjectId) {
@@ -125,9 +129,11 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   const fetchBugs = async () => {
     try {
       setLoading(true);
-      const url = filterProjectId
-        ? `${API_URL}/api/bugs?project_id=${filterProjectId}`
-        : `${API_URL}/api/bugs`;
+      const params = new URLSearchParams();
+      if (filterProjectId) params.set('project_id', filterProjectId);
+      if (searchQuery.trim()) params.set('search', searchQuery.trim());
+      const qs = params.toString();
+      const url = `${API_URL}/api/bugs${qs ? `?${qs}` : ''}`;
 
       const response = await fetch(url, { headers: authHeaders });
       if (response.ok) {
@@ -171,6 +177,18 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
     if (!bug.project) return `BUG-${bug.id}`;
     const seq = bug.project_sequence != null ? bug.project_sequence : bug.id;
     return `${bug.project.key}-${String(seq).padStart(3, '0')}`;
+  };
+
+  const isBugOverdue = (bug) => {
+    if (!bug.due_date || ['Resolved', 'Closed'].includes(bug.status)) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return new Date(bug.due_date) < today;
+  };
+
+  const formatDueDate = (dueDate) => {
+    const [year, month, day] = dueDate.split('-');
+    return `${month}/${day}/${year.slice(2)}`;
   };
 
   const handleBugFieldUpdate = async (bugId, fields) => {
@@ -314,7 +332,6 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
   // Apply version, search, and metadata filters on top of the project-scoped fetch
   const filteredBugs = bugs.filter(b => {
     if (filterVersionId && b.version_id !== parseInt(filterVersionId)) return false;
-    if (searchQuery.trim() && !b.title.toLowerCase().includes(searchQuery.trim().toLowerCase())) return false;
     if (filterSeverity && b.severity !== filterSeverity) return false;
     if (filterPriority && b.priority !== filterPriority) return false;
     if (filterType && b.bug_type !== filterType) return false;
@@ -355,7 +372,7 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search bugs..."
+              placeholder="Search bugs & comments..."
               style={styles.searchInput}
             />
             {searchQuery && (
@@ -652,6 +669,15 @@ export const BugTracker = ({ selectedProject, onClearProjectFilter }) => {
                             <RotateCcw size={9} style={{ marginRight: '2px' }} />
                             Reopened ×{bug.reopen_count}
                           </span>
+                        )}
+                        {bug.due_date && (
+                          <span style={{ ...styles.dueDateTag, ...(isBugOverdue(bug) ? styles.dueDateTagOverdue : {}) }}>
+                            <Calendar size={9} style={{ marginRight: '2px' }} />
+                            {isBugOverdue(bug) ? 'Overdue ' : 'Due '}{formatDueDate(bug.due_date)}
+                          </span>
+                        )}
+                        {['Resolved', 'Closed'].includes(bug.status) && bug.resolution && (
+                          <span style={styles.resolutionTag}>{bug.resolution}</span>
                         )}
                       </div>
                       {bug.labels && bug.labels.length > 0 && (
@@ -1083,6 +1109,35 @@ const styles = {
     padding: '1px 5px',
     display: 'inline-flex',
     alignItems: 'center',
+    width: 'fit-content',
+  },
+  dueDateTag: {
+    fontSize: '9px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '1px 5px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    width: 'fit-content',
+  },
+  dueDateTagOverdue: {
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    color: '#12100d',
+    background: 'var(--accent-rust)',
+    border: '2px solid var(--accent-rust)',
+  },
+  resolutionTag: {
+    fontSize: '9px',
+    fontWeight: '700',
+    color: 'var(--text-muted)',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '1px 5px',
+    display: 'inline-block',
     width: 'fit-content',
   },
   cardFooter: {

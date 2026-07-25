@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, date
 
 ASSIGNABLE_ROLES = ["Admin", "PM", "Dev", "QA", "Guest"]
 
@@ -244,10 +244,12 @@ class BugBase(BaseModel):
     environment: Optional[str] = None
     environment_details: Optional[str] = None
     status: str = "Open"
+    resolution: Optional[str] = None
     severity: str = "Medium"
     priority: str = "Medium"
     bug_type: str = "Functional"
     is_blocker: bool = False
+    due_date: Optional[date] = None
     project_id: int
     version_id: Optional[int] = None
     owner_id: Optional[int] = None
@@ -262,10 +264,13 @@ class BugUpdate(BaseModel):
     environment: Optional[str] = None
     environment_details: Optional[str] = None
     status: Optional[str] = None
+    resolution: Optional[str] = None
     severity: Optional[str] = None
     priority: Optional[str] = None
     bug_type: Optional[str] = None
     is_blocker: Optional[bool] = None
+    due_date: Optional[date] = None
+    clear_due_date: bool = False
     version_id: Optional[int] = None
     component_ids: Optional[List[int]] = None
     owner_id: Optional[int] = None

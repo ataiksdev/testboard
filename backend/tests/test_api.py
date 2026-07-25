@@ -1472,3 +1472,106 @@ def test_project_comment_mentions(fake_smtp):
 
     resp = client.get("/api/notifications", headers=mentioned_headers)
     assert any(n["type"] == "comment_mention" for n in resp.json())
+
+
+def test_bug_due_date():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Due Date Proj", "key": "DDP"}, headers=admin_headers).json()
+
+    bug = client.post("/api/bugs", json={
+        "title": "Needs a deadline",
+        "project_id": project["id"],
+        "due_date": "2026-08-01"
+    }, headers=admin_headers).json()
+    assert bug["due_date"] == "2026-08-01"
+
+    resp = client.get(f"/api/bugs?project_id={project['id']}", headers=admin_headers)
+    assert resp.json()[0]["due_date"] == "2026-08-01"
+
+    # Update to a new due date is tracked in field-level history
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"due_date": "2026-08-15"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["due_date"] == "2026-08-15"
+
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    by_field = {e["field_name"]: e for e in resp.json() if e["activity_type"] == "bug_field_updated"}
+    assert by_field["due_date"]["old_value"] == "2026-08-01"
+    assert by_field["due_date"]["new_value"] == "2026-08-15"
+
+    # Clearing requires the explicit clear flag, since due_date: None is a no-op
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"due_date": None}, headers=admin_headers)
+    assert resp.json()["due_date"] == "2026-08-15"
+
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"clear_due_date": True}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["due_date"] is None
+
+
+def test_bug_search_matches_title_and_comments():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Search Proj", "key": "SRP"}, headers=admin_headers).json()
+
+    bug_a = client.post("/api/bugs", json={
+        "title": "Alpha checkout failure",
+        "project_id": project["id"]
+    }, headers=admin_headers).json()
+    bug_b = client.post("/api/bugs", json={
+        "title": "Beta login issue",
+        "project_id": project["id"]
+    }, headers=admin_headers).json()
+
+    client.post("/api/comments", json={
+        "bug_id": bug_b["id"],
+        "text": "Reproduced with a xylophone-shaped keyboard layout"
+    }, headers=admin_headers)
+
+    # Title match
+    resp = client.get(f"/api/bugs?project_id={project['id']}&search=Alpha", headers=admin_headers)
+    ids = [b["id"] for b in resp.json()]
+    assert bug_a["id"] in ids
+    assert bug_b["id"] not in ids
+
+    # Comment-text match (bug itself has no matching title/description)
+    resp = client.get(f"/api/bugs?project_id={project['id']}&search=xylophone", headers=admin_headers)
+    ids = [b["id"] for b in resp.json()]
+    assert bug_b["id"] in ids
+    assert bug_a["id"] not in ids
+
+    # No match
+    resp = client.get(f"/api/bugs?project_id={project['id']}&search=nonexistentterm", headers=admin_headers)
+    assert resp.json() == []
+
+
+def test_bug_resolution_taxonomy():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Resolution Proj", "key": "RSP"}, headers=admin_headers).json()
+
+    bug = client.post("/api/bugs", json={
+        "title": "Needs a resolution",
+        "project_id": project["id"]
+    }, headers=admin_headers).json()
+    assert bug["resolution"] is None
+
+    # Resolving with a resolution in the same request
+    resp = client.put(f"/api/bugs/{bug['id']}", json={
+        "status": "Resolved",
+        "resolution": "Fixed"
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "Resolved"
+    assert resp.json()["resolution"] == "Fixed"
+
+    resp = client.get(f"/api/bugs/{bug['id']}/activity", headers=admin_headers)
+    by_field = {e["field_name"]: e for e in resp.json() if e["activity_type"] == "bug_field_updated"}
+    assert by_field["resolution"]["old_value"] is None
+    assert by_field["resolution"]["new_value"] == "Fixed"
+
+    # Changing resolution while still resolved
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"resolution": "Duplicate"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["resolution"] == "Duplicate"
+
+    # Reopening auto-clears the resolution
+    resp = client.put(f"/api/bugs/{bug['id']}", json={"status": "In Progress"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["resolution"] is None

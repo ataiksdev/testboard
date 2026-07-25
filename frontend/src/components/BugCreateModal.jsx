@@ -36,6 +36,7 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
   const [bugEnvironment, setBugEnvironment] = useState('');
   const [bugEnvironmentDetails, setBugEnvironmentDetails] = useState('');
   const [bugOwnerId, setBugOwnerId] = useState('');
+  const [bugDueDate, setBugDueDate] = useState('');
   const [bugIsBlocker, setBugIsBlocker] = useState(false);
   const [stagedAttachments, setStagedAttachments] = useState([]); // [{dataUrl, name}]
   const [stagedLabels, setStagedLabels] = useState([]);
@@ -137,6 +138,7 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
           bug_type: bugType,
           is_blocker: bugIsBlocker,
           owner_id: bugOwnerId ? parseInt(bugOwnerId) : null,
+          due_date: bugDueDate || null,
         })
       });
 
@@ -340,16 +342,27 @@ export const BugCreateModal = ({ onClose, onCreated, projects, versions, compone
             </div>
           </div>
 
-          <div style={styles.inputGroup}>
-            <label style={styles.modalLabel}>Assign Owner</label>
-            <select
-              value={bugOwnerId}
-              onChange={(e) => setBugOwnerId(e.target.value)}
-              style={styles.modalSelect}
-            >
-              <option value="">Unassigned</option>
-              {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-            </select>
+          <div style={styles.row}>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.modalLabel}>Assign Owner</label>
+              <select
+                value={bugOwnerId}
+                onChange={(e) => setBugOwnerId(e.target.value)}
+                style={styles.modalSelect}
+              >
+                <option value="">Unassigned</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+              </select>
+            </div>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.modalLabel}>Due Date</label>
+              <input
+                type="date"
+                value={bugDueDate}
+                onChange={(e) => setBugDueDate(e.target.value)}
+                style={styles.modalInput}
+              />
+            </div>
           </div>
 
           <div style={styles.inputGroup}>

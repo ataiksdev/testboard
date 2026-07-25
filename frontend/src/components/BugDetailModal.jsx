@@ -8,6 +8,7 @@ const SEVERITIES = ["Low", "Medium", "High", "Critical"];
 const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
 const BUG_TYPES = ["Functional", "Security", "Usability", "Regression", "Performance", "Other"];
 const ENVIRONMENTS = ["Live", "Test", "Staging"];
+const RESOLUTIONS = ["Fixed", "Won't Fix", "Duplicate", "Cannot Reproduce", "Works For Me", "Incomplete"];
 const LINK_TYPES = [
   { value: 'relates_to', label: 'Relates to' },
   { value: 'blocks', label: 'Blocks' },
@@ -29,6 +30,8 @@ const ACTIVITY_FIELD_LABELS = {
   priority: 'priority',
   bug_type: 'type',
   is_blocker: 'blocker flag',
+  due_date: 'due date',
+  resolution: 'resolution',
   version: 'target version',
   owner: 'owner',
   components: 'components',
@@ -408,6 +411,9 @@ export const BugDetailModal = ({
                   Reopened ×{bug.reopen_count}
                 </span>
               )}
+              {['Resolved', 'Closed'].includes(bug.status) && bug.resolution && (
+                <span style={styles.resolutionBadge}>{bug.resolution}</span>
+              )}
             </span>
             <input
               type="text"
@@ -535,6 +541,23 @@ export const BugDetailModal = ({
             </div>
           </div>
 
+          {['Resolved', 'Closed'].includes(bug.status) && (
+            <div style={styles.row}>
+              <div style={{ ...styles.inputGroup, flex: 1 }}>
+                <label style={styles.modalLabel}>Resolution</label>
+                <select
+                  value={bug.resolution || ''}
+                  disabled={!canEditFields}
+                  onChange={(e) => handleFieldUpdate({ resolution: e.target.value })}
+                  style={{ ...styles.modalSelect, opacity: canEditFields ? 1 : 0.7 }}
+                >
+                  <option value="">Unspecified</option>
+                  {RESOLUTIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+
           <div style={styles.row}>
             <div style={{ ...styles.inputGroup, flex: 1 }}>
               <label style={styles.modalLabel}>Environment</label>
@@ -573,6 +596,21 @@ export const BugDetailModal = ({
                 <option value="">Unassigned</option>
                 {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
               </select>
+            </div>
+            <div style={{ ...styles.inputGroup, flex: 1 }}>
+              <label style={styles.modalLabel}>Due Date</label>
+              <input
+                type="date"
+                defaultValue={bug.due_date || ''}
+                disabled={!canEditFields}
+                onBlur={(e) => {
+                  const value = e.target.value;
+                  if (value !== (bug.due_date || '')) {
+                    handleFieldUpdate(value ? { due_date: value } : { clear_due_date: true });
+                  }
+                }}
+                style={{ ...styles.modalInput, opacity: canEditFields ? 1 : 0.7 }}
+              />
             </div>
             <div style={{ ...styles.inputGroup, flex: 1, justifyContent: 'center' }}>
               <div style={styles.checkboxGroup}>
@@ -892,6 +930,19 @@ const styles = {
     alignItems: 'center',
     background: 'var(--accent-mustard)',
     color: '#12100d',
+    padding: '1px 6px',
+    borderRadius: 'var(--border-radius-sm)',
+    fontSize: '10px',
+    fontWeight: '700',
+    textTransform: 'none',
+  },
+  resolutionBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    marginLeft: '8px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    color: 'var(--text-muted)',
     padding: '1px 6px',
     borderRadius: 'var(--border-radius-sm)',
     fontSize: '10px',

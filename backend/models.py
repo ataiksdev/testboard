@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -88,11 +88,13 @@ class Bug(Base):
     environment = Column(String, nullable=True)  # Live, Test, Staging
     environment_details = Column(Text, nullable=True)  # e.g. "Chrome 126 on Windows 11"
     status = Column(String, default="Open")  # Open, In Progress, In QA, Resolved, Closed
+    resolution = Column(String, nullable=True)  # Fixed, Won't Fix, Duplicate, Cannot Reproduce, Works For Me, Incomplete -- only meaningful when status is Resolved/Closed
     severity = Column(String, default="Medium")  # Low, Medium, High, Critical
     priority = Column(String, default="Medium")  # Low, Medium, High, Urgent
     bug_type = Column(String, default="Functional")  # Functional, Security, Usability, Regression, Performance, Other
     is_blocker = Column(Boolean, default=False)
     reopen_count = Column(Integer, default=0)
+    due_date = Column(Date, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

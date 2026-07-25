@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import text, func
+from sqlalchemy import text, func, or_
 from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
@@ -98,6 +98,10 @@ def ensure_sqlite_schema():
             connection.execute(text("ALTER TABLE bugs ADD COLUMN environment_details TEXT"))
         if "reopen_count" not in bug_columns:
             connection.execute(text("ALTER TABLE bugs ADD COLUMN reopen_count INTEGER DEFAULT 0"))
+        if "due_date" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN due_date DATE"))
+        if "resolution" not in bug_columns:
+            connection.execute(text("ALTER TABLE bugs ADD COLUMN resolution VARCHAR"))
 
         # Legacy single-valued bugs.component_id -> many-to-many bug_components migration.
         # bug_components already exists here since Base.metadata.create_all() runs before
@@ -965,6 +969,7 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
         priority=bug_in.priority,
         bug_type=bug_in.bug_type,
         is_blocker=bug_in.is_blocker,
+        due_date=bug_in.due_date,
         owner_id=owner_id,
         reporter_id=current_user.id
     )
@@ -1024,13 +1029,26 @@ def create_bug(bug_in: BugCreate, background_tasks: BackgroundTasks, current_use
     return new_bug
 
 @app.get("/api/bugs", response_model=List[BugOut])
-def list_bugs(project_id: Optional[int] = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_bugs(project_id: Optional[int] = None, search: Optional[str] = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     query = db.query(Bug)
     if project_id is not None:
         query = query.filter(Bug.project_id == project_id)
     visible_ids = _visible_project_ids(db, current_user)
     if visible_ids is not None:
         query = query.filter(Bug.project_id.in_(visible_ids))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        matching_comment_bug_ids = db.query(Comment.bug_id).filter(
+            Comment.bug_id.isnot(None), Comment.text.ilike(term)
+        )
+        query = query.filter(
+            or_(
+                Bug.title.ilike(term),
+                Bug.description.ilike(term),
+                Bug.expected_behavior.ilike(term),
+                Bug.id.in_(matching_comment_bug_ids),
+            )
+        )
     return query.all()
 
 @app.put("/api/bugs/{bug_id}", response_model=BugOut)
@@ -1043,7 +1061,7 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
     old_owner_id = bug.owner_id
     old_is_blocker = bug.is_blocker
 
-    TRACKED_FIELDS = ["title", "description", "expected_behavior", "environment", "environment_details", "severity", "priority", "bug_type", "is_blocker"]
+    TRACKED_FIELDS = ["title", "description", "expected_behavior", "environment", "environment_details", "severity", "priority", "bug_type", "is_blocker", "due_date", "resolution"]
     before_snapshot = {field: getattr(bug, field) for field in TRACKED_FIELDS}
     before_version_id = bug.version_id
     before_owner_id = bug.owner_id
@@ -1070,9 +1088,12 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
             bug.resolved_at = datetime.datetime.utcnow()
         elif bug_in.status not in ["Resolved", "Closed"] and old_status in ["Resolved", "Closed"]:
             bug.resolved_at = None
+            bug.resolution = None
             reopened = True
             bug.reopen_count = (bug.reopen_count or 0) + 1
 
+    if bug_in.resolution is not None:
+        bug.resolution = bug_in.resolution
     if bug_in.severity is not None:
         bug.severity = bug_in.severity
     if bug_in.priority is not None:
@@ -1081,6 +1102,10 @@ def update_bug(bug_id: int, bug_in: BugUpdate, background_tasks: BackgroundTasks
         bug.bug_type = bug_in.bug_type
     if bug_in.is_blocker is not None:
         bug.is_blocker = bug_in.is_blocker
+    if bug_in.clear_due_date:
+        bug.due_date = None
+    elif bug_in.due_date is not None:
+        bug.due_date = bug_in.due_date
     if bug_in.version_id is not None:
         require_version_for_project(db, bug_in.version_id, bug.project_id)
         bug.version_id = bug_in.version_id
