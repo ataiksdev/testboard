@@ -370,6 +370,38 @@ def test_project_document_upload_list_delete(tmp_path, monkeypatch):
     assert resp.json() == []
 
 
+def test_document_upload_notifies_qa_members(tmp_path, monkeypatch, fake_smtp):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    qa_headers, qa_id = _make_user_with_role(admin_headers, "docqa@test.com", "Doc QA", "QA")
+    pm_headers, pm_id = _make_user_with_role(admin_headers, "docpm@test.com", "Doc PM", "PM")
+    project = client.post("/api/projects", json={"name": "Notify Doc Project", "key": "NDP"}, headers=admin_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": qa_id}, headers=admin_headers)
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": pm_id}, headers=admin_headers)
+
+    fake_smtp.instances = []
+    resp = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Test Plan v1", "doc_type": "Test Plan"},
+        files={"file": ("plan.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")}
+    )
+    assert resp.status_code == 200
+
+    # The QA project member gets an in-app notification and an email...
+    resp = client.get("/api/notifications", headers=qa_headers)
+    notifs = resp.json()
+    assert any(n["type"] == "document_uploaded" for n in notifs)
+    assert len(fake_smtp.instances) == 1
+    assert fake_smtp.instances[0].sent[1] == ["docqa@test.com"]
+
+    # ...but the PM project member (non-QA) does not.
+    resp = client.get("/api/notifications", headers=pm_headers)
+    assert not any(n["type"] == "document_uploaded" for n in resp.json())
+
+
 def test_project_document_permissions(tmp_path, monkeypatch):
     from backend.storage import LocalDiskStorage
     monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))

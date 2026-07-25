@@ -846,6 +846,7 @@ def list_project_documents(project_id: int, current_user: User = Depends(get_cur
 @app.post("/api/projects/{project_id}/documents", response_model=ProjectDocumentOut)
 async def upload_project_document(
     project_id: int,
+    background_tasks: BackgroundTasks,
     title: str = Form(...),
     doc_type: str = Form("Other"),
     version_id: Optional[int] = Form(None),
@@ -853,7 +854,7 @@ async def upload_project_document(
     current_user: User = Depends(require_roles("Admin", "PM", "QA")),
     db: Session = Depends(get_db)
 ):
-    require_project(db, project_id)
+    project = require_project(db, project_id)
     if version_id is not None:
         require_version_for_project(db, version_id, project_id)
 
@@ -893,6 +894,19 @@ async def upload_project_document(
     )
     db.add(log)
     db.commit()
+
+    notify_project_members(
+        db,
+        project_id,
+        notif_type="document_uploaded",
+        title=f"New document uploaded: {title}",
+        body=f"{current_user.full_name} uploaded a {doc_type} document to {project.name}.",
+        link="#projects",
+        background_tasks=background_tasks,
+        email=True,
+        exclude_user_id=current_user.id,
+        role="QA",
+    )
 
     return document
 

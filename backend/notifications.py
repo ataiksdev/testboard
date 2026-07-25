@@ -1,20 +1,26 @@
 import os
 import smtplib
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
 from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
+from backend.email_templates import render_email
 from backend.models import Notification, ProjectMember, User
 
 
-def send_email(to_email: str, subject: str, body: str) -> None:
+def send_email(to_email: str, subject: str, body: str, html_body: Optional[str] = None) -> None:
     """Best-effort SMTP send.
 
     Silently no-ops if TESTBOARD_SMTP_HOST isn't set, so notifications work
     with zero config out of the box. Swallows delivery errors so a broken
     mail server never breaks the request that triggered the notification.
+
+    `body` is always sent as the plain-text part (accessibility + spam-filter
+    friendliness). When `html_body` is given, the message becomes
+    multipart/alternative so HTML-capable clients render the branded version.
     """
     host = os.getenv("TESTBOARD_SMTP_HOST")
     if not host:
@@ -29,7 +35,12 @@ def send_email(to_email: str, subject: str, body: str) -> None:
     password = os.getenv("TESTBOARD_SMTP_PASSWORD")
     use_tls = os.getenv("TESTBOARD_SMTP_USE_TLS", "true").lower() != "false"
 
-    message = MIMEText(body)
+    if html_body:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText(body, "plain"))
+        message.attach(MIMEText(html_body, "html"))
+    else:
+        message = MIMEText(body)
     message["Subject"] = subject
     message["From"] = from_addr
     message["To"] = to_email
@@ -52,8 +63,10 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
 def _app_link(link: Optional[str]) -> str:
     base = os.getenv("TESTBOARD_APP_URL", "").rstrip("/")
-    if not base or not link:
+    if not base:
         return ""
+    if not link:
+        return base
     return f"{base}/{link.lstrip('#/')}"
 
 
@@ -85,11 +98,11 @@ def notify(
     if email and background_tasks is not None:
         recipient = db.query(User).filter(User.id == user_id).first()
         if recipient:
-            email_body = body or title
             app_link = _app_link(link)
-            if app_link:
-                email_body = f"{email_body}\n\nOpen TestBoard: {app_link}"
-            background_tasks.add_task(send_email, recipient.email, title, email_body)
+            subject, html_body, text_body = render_email(
+                notif_type, title, body, app_link, recipient_name=recipient.full_name
+            )
+            background_tasks.add_task(send_email, recipient.email, subject, text_body, html_body)
 
     return notification
 
@@ -124,10 +137,13 @@ def notify_project_members(
     background_tasks: Optional[BackgroundTasks] = None,
     email: bool = False,
     exclude_user_id: Optional[int] = None,
+    role: Optional[str] = None,
 ) -> None:
-    member_ids = {
-        m.user_id for m in db.query(ProjectMember).filter(ProjectMember.project_id == project_id).all()
-    }
+    """Notify project members, optionally restricted to a single User.role (e.g. "QA")."""
+    query = db.query(ProjectMember).filter(ProjectMember.project_id == project_id)
+    if role:
+        query = query.join(User, User.id == ProjectMember.user_id).filter(User.role == role)
+    member_ids = {m.user_id for m in query.all()}
     for user_id in member_ids:
         if user_id == exclude_user_id:
             continue
