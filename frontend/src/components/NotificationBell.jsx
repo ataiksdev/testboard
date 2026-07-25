@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../utils/auth';
 import { Bell, Check } from 'lucide-react';
+import { formatDateTimeWAT } from '../utils/datetime';
 
 export const NotificationBell = ({ collapsed, variant = 'sidebar' }) => {
   const { token, API_URL } = useAuth();
@@ -148,7 +149,7 @@ export const NotificationBell = ({ collapsed, variant = 'sidebar' }) => {
                     <span style={styles.notifTitle}>{n.title}</span>
                     {n.body && <span style={styles.notifText}>{n.body}</span>}
                     <span style={styles.notifTime}>
-                      {new Date(n.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                      {formatDateTimeWAT(n.created_at)}
                     </span>
                   </div>
                 </div>

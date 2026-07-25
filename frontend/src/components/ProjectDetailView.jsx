@@ -5,6 +5,7 @@ import {
   Briefcase, BarChart3, ChevronRight
 } from 'lucide-react';
 import { useToast } from './Toast';
+import { formatDateTimeWAT } from '../utils/datetime';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -683,7 +684,7 @@ export const ProjectDetailView = ({
                       <div style={styles.commentMeta}>
                         <strong>{comment.user.full_name}</strong>
                         <span style={styles.commentTime}>
-                          {new Date(comment.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          {formatDateTimeWAT(comment.created_at)}
                         </span>
                       </div>
                       <p style={styles.commentText}>{comment.text}</p>

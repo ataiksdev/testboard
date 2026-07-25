@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import { Search, X, FolderKanban, Activity, ShieldOff, ShieldCheck } from 'lucide-react';
 import { ROLES, ROLE_COLOR_VAR } from '../utils/roles';
+import { formatDateTimeWAT } from '../utils/datetime';
 
 const formatActivity = (a) => {
   switch (a.activity_type) {
@@ -259,7 +260,7 @@ export const UserManagement = () => {
                         <div key={a.id} style={styles.activityRow}>
                           <span style={styles.activityText}>{formatActivity(a)}</span>
                           <span style={styles.activityTime}>
-                            {new Date(a.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                            {formatDateTimeWAT(a.created_at)}
                           </span>
                         </div>
                       ))}

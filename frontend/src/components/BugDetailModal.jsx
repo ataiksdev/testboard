@@ -3,6 +3,7 @@ import {
   MessageSquare, X, Eye, ImagePlus, Clipboard, Link as LinkIcon, RotateCcw, Tags, ChevronDown, History as HistoryIcon
 } from 'lucide-react';
 import { useToast } from './Toast';
+import { formatDateTimeWAT, formatDateWAT } from '../utils/datetime';
 
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
 const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
@@ -761,7 +762,7 @@ export const BugDetailModal = ({
 
           <div style={styles.metaRow}>
             <span>Reported by: <strong>{bug.reporter.full_name}</strong></span>
-            <span>Logged: {new Date(bug.created_at).toLocaleDateString()}</span>
+            <span>Logged: {formatDateWAT(bug.created_at)}</span>
           </div>
 
           <div style={styles.detailSection}>
@@ -793,7 +794,7 @@ export const BugDetailModal = ({
                     <div key={entry.id} style={styles.historyRow}>
                       <span style={styles.historyText}>{formatActivityEntry(entry)}</span>
                       <span style={styles.commentTime}>
-                        {new Date(entry.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                        {formatDateTimeWAT(entry.created_at)}
                       </span>
                     </div>
                   ))
@@ -861,7 +862,7 @@ export const BugDetailModal = ({
                       <div style={styles.commentMeta}>
                         <strong>{comment.user.full_name}</strong>
                         <span style={styles.commentTime}>
-                          {new Date(comment.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          {formatDateTimeWAT(comment.created_at)}
                         </span>
                       </div>
                       <p style={styles.commentText}>{comment.text}</p>

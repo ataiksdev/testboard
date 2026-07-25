@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
+import { formatDateTimeWAT, formatDateWAT } from '../utils/datetime';
 import {
   FileText, Calendar, Printer, Copy, Check,
   Bug as BugIcon, AlertTriangle, ArrowRight, MessageSquare, RefreshCw,
@@ -387,7 +388,7 @@ export const ReportsDashboard = () => {
                           {v.status}
                         </span>
                       </td>
-                      <td style={styles.td}>{v.release_date ? new Date(v.release_date).toLocaleDateString() : '—'}</td>
+                      <td style={styles.td}>{v.release_date ? formatDateWAT(v.release_date) : '—'}</td>
                       <td style={styles.td}>{v.open_bugs}</td>
                       <td style={{ ...styles.td, color: v.blocker_bugs > 0 ? 'var(--accent-rust)' : 'var(--text-muted)', fontWeight: v.blocker_bugs > 0 ? '700' : '400' }}>
                         {v.blocker_bugs}
@@ -465,7 +466,7 @@ export const ReportsDashboard = () => {
                         )}
                       </div>
                       <span style={styles.moveDate}>
-                        {new Date(log.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                        {formatDateTimeWAT(log.created_at)}
                       </span>
                     </div>
                   );
@@ -511,7 +512,7 @@ export const ReportsDashboard = () => {
                       </td>
                       <td style={styles.td}>{bug.status}</td>
                       <td style={styles.td}>{bug.owner ? bug.owner.full_name : 'Unassigned'}</td>
-                      <td style={styles.td}>{new Date(bug.created_at).toLocaleDateString()}</td>
+                      <td style={styles.td}>{formatDateWAT(bug.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -537,7 +538,7 @@ export const ReportsDashboard = () => {
                         {c.bug_id ? `Bug ID: ${c.bug_id}` : c.project_id ? `Project ID: ${c.project_id}` : 'General'}
                       </span>
                       <span style={styles.commentDate}>
-                        {new Date(c.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                        {formatDateTimeWAT(c.created_at)}
                       </span>
                     </div>
                     <p style={styles.commentBody}>{c.text}</p>
