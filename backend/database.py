@@ -2,15 +2,26 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-# Create a local SQLite database file in the root directory
-DATABASE_URL = "sqlite:///./database.db"
+load_dotenv()
 
-# The connect_args={"check_same_thread": False} is needed only for SQLite.
-# It allows multiple threads to access the same database.
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
+# Check if a DATABASE_URL is provided in environment variables (for Supabase)
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+
+# If using PostgreSQL, engine doesn't need check_same_thread
+if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres"):
+    # SQLAlchemy 1.4+ requires 'postgresql://' instead of 'postgres://'
+    if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+        SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        
+    engine = create_engine(SQLALCHEMY_DATABASE_URL)
+else:
+    # Fallback to local SQLite
+    SQLALCHEMY_DATABASE_URL = "sqlite:///./database.db"
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

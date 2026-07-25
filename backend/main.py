@@ -56,8 +56,13 @@ from backend.notifications import notify, notify_admins, notify_project_members
 
 # UPLOADS_DIR must match storage.py's LocalDiskStorage default so the /uploads
 # static mount always serves whatever the local backend actually writes to.
+# Only relevant for the "local" storage backend — on serverless platforms
+# (e.g. Vercel) the filesystem is read-only outside /tmp, and cloud storage
+# backends (Supabase, etc.) return absolute URLs that never touch this path.
+USING_LOCAL_STORAGE = os.getenv("TESTBOARD_STORAGE_BACKEND", "local").lower() == "local"
 UPLOADS_DIR = Path(os.getenv("TESTBOARD_STORAGE_DIR") or (Path(__file__).resolve().parent / "uploads"))
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+if USING_LOCAL_STORAGE:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 DOCUMENT_MIME_TYPES = {
     "application/pdf": "pdf",
@@ -1772,11 +1777,12 @@ def export_activity(
 # Mount the static files directory if we're serving the built frontend directly
 frontend_dist_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
 
-if os.path.exists(frontend_dist_path):
+if USING_LOCAL_STORAGE:
     app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+if os.path.exists(frontend_dist_path):
     app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="static")
 else:
-    app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
     @app.get("/")
     def index_placeholder():
         return {

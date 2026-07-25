@@ -125,6 +125,68 @@ class GoogleDriveStorage(StorageBackend):
         return match.group(1) if match else None
 
 
+class SupabaseStorage(StorageBackend):
+    """Uploads files to a Supabase Storage bucket."""
+
+    def __init__(self, url: str, key: str, bucket_name: str = "attachments"):
+        from supabase import create_client, Client
+        self.supabase: Client = create_client(url, key)
+        self.bucket_name = bucket_name
+
+    def save(self, content: bytes, extension: str, mime_type: Optional[str] = None, subfolder: str = "") -> str:
+        filename = f"{uuid.uuid4().hex}.{extension}"
+        filepath = f"{subfolder}/{filename}" if subfolder else filename
+        
+        # Upload the file
+        self.supabase.storage.from_(self.bucket_name).upload(
+            file=content,
+            path=filepath,
+            file_options={"content-type": mime_type or "application/octet-stream"}
+        )
+        
+        # Get public URL
+        res = self.supabase.storage.from_(self.bucket_name).get_public_url(filepath)
+        return res
+
+    def delete(self, url: str) -> None:
+        if not url:
+            return
+        
+        # The public URL format is typically:
+        # https://<project_ref>.supabase.co/storage/v1/object/public/<bucket_name>/<filepath>
+        try:
+            # Extract filepath after the bucket_name
+            parts = url.split(f"/public/{self.bucket_name}/")
+            if len(parts) == 2:
+                filepath = parts[1]
+                self.supabase.storage.from_(self.bucket_name).remove([filepath])
+        except Exception:
+            pass
+
+
+class HybridStorage(StorageBackend):
+    """Routes files to different storage backends based on their mime_type."""
+
+    def __init__(self, video_storage: StorageBackend, image_storage: StorageBackend):
+        self.video_storage = video_storage
+        self.image_storage = image_storage
+
+    def save(self, content: bytes, extension: str, mime_type: Optional[str] = None, subfolder: str = "") -> str:
+        if mime_type and mime_type.startswith("video/"):
+            return self.video_storage.save(content, extension, mime_type, subfolder)
+        else:
+            return self.image_storage.save(content, extension, mime_type, subfolder)
+
+    def delete(self, url: str) -> None:
+        if not url:
+            return
+            
+        if "drive.google.com" in url:
+            self.video_storage.delete(url)
+        else:
+            self.image_storage.delete(url)
+
+
 @functools.lru_cache()
 def get_storage_backend() -> StorageBackend:
     backend = os.getenv("TESTBOARD_STORAGE_BACKEND", "local").lower()
@@ -138,6 +200,35 @@ def get_storage_backend() -> StorageBackend:
             credentials_file=os.getenv("TESTBOARD_GDRIVE_CREDENTIALS_FILE"),
             credentials_json=os.getenv("TESTBOARD_GDRIVE_CREDENTIALS_JSON"),
         )
+        
+    if backend == "supabase":
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        bucket = os.getenv("SUPABASE_BUCKET_NAME", "attachments")
+        if not url or not key:
+            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set when TESTBOARD_STORAGE_BACKEND=supabase")
+        return SupabaseStorage(url=url, key=key, bucket_name=bucket)
+        
+    if backend == "hybrid":
+        # Setup Google Drive for Videos
+        gdrive_folder_id = os.getenv("TESTBOARD_GDRIVE_FOLDER_ID")
+        if not gdrive_folder_id:
+            raise RuntimeError("TESTBOARD_GDRIVE_FOLDER_ID is required for hybrid storage")
+        video_storage = GoogleDriveStorage(
+            folder_id=gdrive_folder_id,
+            credentials_file=os.getenv("TESTBOARD_GDRIVE_CREDENTIALS_FILE"),
+            credentials_json=os.getenv("TESTBOARD_GDRIVE_CREDENTIALS_JSON"),
+        )
+        
+        # Setup Supabase for Images
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_KEY")
+        supabase_bucket = os.getenv("SUPABASE_BUCKET_NAME", "attachments")
+        if not supabase_url or not supabase_key:
+            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY are required for hybrid storage")
+        image_storage = SupabaseStorage(url=supabase_url, key=supabase_key, bucket_name=supabase_bucket)
+        
+        return HybridStorage(video_storage=video_storage, image_storage=image_storage)
 
     base_dir = Path(os.getenv("TESTBOARD_STORAGE_DIR") or (Path(__file__).resolve().parent / "uploads"))
     return LocalDiskStorage(base_dir=base_dir)
