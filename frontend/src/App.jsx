@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './utils/auth';
 import { ToastProvider } from './components/Toast';
 import { AuthPages } from './components/AuthPages';
+import { AcceptInvitePage } from './components/AcceptInvitePage';
 import { ProjectTracker } from './components/ProjectTracker';
 import { BugTracker } from './components/BugTracker';
 import { ReportsDashboard } from './components/ReportsDashboard';
@@ -36,6 +37,8 @@ const AppContent = () => {
   }, [collapsed]);
 
   useEffect(() => {
+    // Never clobber a pending invite-accept link with the regular tab hash
+    if (window.location.hash.startsWith('#accept-invite')) return;
     if (window.location.hash !== `#${activeTab}`) {
       window.location.hash = activeTab;
     }
@@ -54,6 +57,11 @@ const AppContent = () => {
       setActiveTab('projects');
     }
   }, [user, activeTab]);
+
+  // Invite links must work regardless of login state (unauthenticated by design)
+  if (window.location.hash.startsWith('#accept-invite')) {
+    return <AcceptInvitePage />;
+  }
 
   // If not logged in, render Auth pages (Login/Request Access)
   if (!user) {

@@ -1,5 +1,6 @@
 import pytest
 import datetime
+import re
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -349,6 +350,177 @@ def test_cannot_remove_last_admin():
 
     resp = client.put(f"/api/admin/users/{me['id']}", json={"is_active": False}, headers=admin_headers)
     assert resp.status_code == 400
+
+
+# ==================== BULK USER MANAGEMENT ====================
+
+def test_bulk_invite_creates_pending_users_and_sends_email(fake_smtp, monkeypatch):
+    monkeypatch.setenv("TESTBOARD_APP_URL", "https://testboard.example.com")
+    admin_headers = _make_admin()
+
+    resp = client.post("/api/admin/users/bulk-invite", json={
+        "invites": [
+            {"email": "invitee.one@test.com", "role": "QA", "full_name": "Invitee One"},
+            {"email": "invitee.two@test.com", "role": "Dev"},
+        ]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert set(result["invited"]) == {"invitee.one@test.com", "invitee.two@test.com"}
+    assert result["skipped"] == []
+    assert len(fake_smtp.instances) == 2
+
+    pending = client.get("/api/admin/users/pending", headers=admin_headers).json()
+    row_one = next(u for u in pending if u["email"] == "invitee.one@test.com")
+    assert row_one["full_name"] == "Invitee One"
+    assert row_one["invited_role"] == "QA"
+
+    # full_name is derived from the email local-part when omitted
+    row_two = next(u for u in pending if u["email"] == "invitee.two@test.com")
+    assert row_two["full_name"] == "Invitee Two"
+    assert row_two["invited_role"] == "Dev"
+
+    # Invited users cannot log in until an admin approves them
+    resp = client.post("/api/auth/login", data={"username": "invitee.one@test.com", "password": "whatever"})
+    assert resp.status_code == 400  # placeholder password, so login fails on credentials anyway
+
+
+def test_bulk_invite_skips_duplicates_and_invalid_roles(monkeypatch):
+    monkeypatch.setenv("TESTBOARD_APP_URL", "https://testboard.example.com")
+    admin_headers = _make_admin()
+    _make_user_with_role(admin_headers, "already.here@test.com", "Already Here", "QA")
+
+    resp = client.post("/api/admin/users/bulk-invite", json={
+        "invites": [
+            {"email": "already.here@test.com", "role": "QA"},
+            {"email": "bad.role@test.com", "role": "SuperAdmin"},
+            {"email": "fresh.invite@test.com", "role": "PM"},
+        ]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["invited"] == ["fresh.invite@test.com"]
+    reasons = {s["email"]: s["reason"] for s in result["skipped"]}
+    assert "already registered" in reasons["already.here@test.com"].lower()
+    assert "invalid role" in reasons["bad.role@test.com"].lower()
+
+
+def test_accept_invite_sets_password_then_requires_approval(fake_smtp, monkeypatch):
+    monkeypatch.setenv("TESTBOARD_APP_URL", "https://testboard.example.com")
+    admin_headers = _make_admin()
+    client.post("/api/admin/users/bulk-invite", json={
+        "invites": [{"email": "acceptme@test.com", "role": "QA", "full_name": "Accept Me"}]
+    }, headers=admin_headers)
+
+    # Extract the invite token from the rendered email body
+    sent_html = fake_smtp.instances[0].sent[2]
+    token = re.search(r"token=([\w-]+)", sent_html).group(1)
+
+    resp = client.post("/api/auth/accept-invite", json={"token": token, "password": "brandnewpassword"})
+    assert resp.status_code == 200
+    assert "must still approve" in resp.json()["message"]
+
+    # Password works, but the account is still Pending
+    resp = client.post("/api/auth/login", data={"username": "acceptme@test.com", "password": "brandnewpassword"})
+    assert resp.status_code == 403
+    assert "pending" in resp.json()["detail"].lower()
+
+    # Token is single-use
+    resp = client.post("/api/auth/accept-invite", json={"token": token, "password": "anotherpassword"})
+    assert resp.status_code == 400
+    assert "already been used" in resp.json()["detail"]
+
+    # Once approved, the password set via the invite link is what logs them in
+    pending = client.get("/api/admin/users/pending", headers=admin_headers).json()
+    target = next(u for u in pending if u["email"] == "acceptme@test.com")
+    client.post(f"/api/admin/users/{target['id']}/approve", json={"role": "QA"}, headers=admin_headers)
+
+    resp = client.post("/api/auth/login", data={"username": "acceptme@test.com", "password": "brandnewpassword"})
+    assert resp.status_code == 200
+
+
+def test_bulk_invite_requires_app_url_configured(monkeypatch):
+    monkeypatch.delenv("TESTBOARD_APP_URL", raising=False)
+    admin_headers = _make_admin()
+
+    resp = client.post("/api/admin/users/bulk-invite", json={
+        "invites": [{"email": "noapp@test.com", "role": "QA"}]
+    }, headers=admin_headers)
+    assert resp.status_code == 400
+    assert "TESTBOARD_APP_URL" in resp.json()["detail"]
+
+
+def test_accept_invite_rejects_unknown_token():
+    resp = client.post("/api/auth/accept-invite", json={"token": "not-a-real-token", "password": "whatever12345"})
+    assert resp.status_code == 400
+    assert "invalid or expired" in resp.json()["detail"].lower()
+
+
+def test_bulk_approve_uses_per_row_roles():
+    admin_headers = _make_admin()
+    client.post("/api/auth/register", json={"email": "bulkapprove1@test.com", "password": "password123", "full_name": "Bulk One"})
+    client.post("/api/auth/register", json={"email": "bulkapprove2@test.com", "password": "password123", "full_name": "Bulk Two"})
+    pending = client.get("/api/admin/users/pending", headers=admin_headers).json()
+    u1 = next(u for u in pending if u["email"] == "bulkapprove1@test.com")
+    u2 = next(u for u in pending if u["email"] == "bulkapprove2@test.com")
+
+    resp = client.post("/api/admin/users/bulk-approve", json={
+        "approvals": [
+            {"user_id": u1["id"], "role": "QA"},
+            {"user_id": u2["id"], "role": "Dev"},
+        ]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert set(result["approved"]) == {u1["id"], u2["id"]}
+    assert result["failed"] == []
+
+    all_users = client.get("/api/admin/users", headers=admin_headers).json()
+    assert next(u for u in all_users if u["id"] == u1["id"])["role"] == "QA"
+    assert next(u for u in all_users if u["id"] == u2["id"])["role"] == "Dev"
+
+
+def test_bulk_approve_reports_per_row_failures():
+    admin_headers = _make_admin()
+    resp = client.post("/api/admin/users/bulk-approve", json={
+        "approvals": [{"user_id": 999999, "role": "QA"}]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["approved"] == []
+    assert result["failed"] == [{"user_id": 999999, "reason": "User not found"}]
+
+
+def test_bulk_role_update_applies_single_role_to_selection():
+    admin_headers = _make_admin()
+    _, dev_id = _make_user_with_role(admin_headers, "bulkrole1@test.com", "Bulk Role One", "Dev")
+    _, qa_id = _make_user_with_role(admin_headers, "bulkrole2@test.com", "Bulk Role Two", "QA")
+
+    resp = client.patch("/api/admin/users/bulk-role-update", json={
+        "user_ids": [dev_id, qa_id], "role": "BA"
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert set(result["updated"]) == {dev_id, qa_id}
+    assert result["failed"] == []
+
+    all_users = client.get("/api/admin/users", headers=admin_headers).json()
+    assert next(u for u in all_users if u["id"] == dev_id)["role"] == "BA"
+    assert next(u for u in all_users if u["id"] == qa_id)["role"] == "BA"
+
+
+def test_bulk_role_update_protects_last_admin():
+    admin_headers = _make_admin()
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+
+    resp = client.patch("/api/admin/users/bulk-role-update", json={
+        "user_ids": [me["id"]], "role": "Dev"
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["updated"] == []
+    assert result["failed"][0]["user_id"] == me["id"]
+    assert "last active admin" in result["failed"][0]["reason"].lower()
 
 
 def test_email_login_is_case_insensitive():

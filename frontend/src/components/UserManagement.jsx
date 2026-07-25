@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { Search, X, FolderKanban, Activity, ShieldOff, ShieldCheck } from 'lucide-react';
+import { useToast } from './Toast';
+import { Search, X, FolderKanban, Activity, ShieldOff, ShieldCheck, CheckSquare, Square } from 'lucide-react';
 import { ROLES, ROLE_COLOR_VAR } from '../utils/roles';
 import { formatDateTimeWAT } from '../utils/datetime';
 
@@ -29,10 +30,14 @@ const formatActivity = (a) => {
 
 export const UserManagement = () => {
   const { token, API_URL } = useAuth();
+  const { showSuccess, showError } = useToast();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [bulkRole, setBulkRole] = useState('QA');
+  const [bulkApplying, setBulkApplying] = useState(false);
 
   const [detailUser, setDetailUser] = useState(null);
   const [detailProjects, setDetailProjects] = useState([]);
@@ -99,6 +104,38 @@ export const UserManagement = () => {
     }
   };
 
+  const toggleUserSelection = (userId) => {
+    setSelectedUserIds(prev => prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]);
+  };
+
+  const clearSelection = () => setSelectedUserIds([]);
+
+  const handleBulkRoleApply = async () => {
+    if (selectedUserIds.length === 0) return;
+    try {
+      setBulkApplying(true);
+      const response = await fetch(`${API_URL}/api/admin/users/bulk-role-update`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ user_ids: selectedUserIds, role: bulkRole })
+      });
+      if (!response.ok) throw new Error('Bulk role update failed');
+      const result = await response.json();
+      fetchUsers();
+      clearSelection();
+      if (result.failed.length > 0) {
+        showError(`${result.updated.length} updated. ${result.failed.length} failed: ` +
+          result.failed.map(f => `#${f.user_id}: ${f.reason}`).join('; '));
+      } else {
+        showSuccess(`${result.updated.length} user(s) updated to ${bulkRole}.`);
+      }
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBulkApplying(false);
+    }
+  };
+
   const openDetail = async (targetUser) => {
     setDetailUser(targetUser);
     setDetailLoading(true);
@@ -143,10 +180,24 @@ export const UserManagement = () => {
         </select>
       </div>
 
+      {selectedUserIds.length > 0 && (
+        <div style={styles.bulkBar}>
+          <span style={styles.bulkCount}>{selectedUserIds.length} selected</span>
+          <select value={bulkRole} onChange={(e) => setBulkRole(e.target.value)} style={styles.roleSelect}>
+            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button className="btn-primary" style={styles.actionBtn} onClick={handleBulkRoleApply} disabled={bulkApplying}>
+            {bulkApplying ? 'Applying...' : `Apply to ${selectedUserIds.length}`}
+          </button>
+          <button className="btn-secondary" style={styles.actionBtn} onClick={clearSelection}>Clear</button>
+        </div>
+      )}
+
       <div className="glass-panel" style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
+              <th style={{ ...styles.th, width: '32px' }}></th>
               <th style={styles.th}>User</th>
               <th style={styles.th}>Role</th>
               <th style={styles.th}>Status</th>
@@ -156,6 +207,17 @@ export const UserManagement = () => {
           <tbody>
             {users.map(u => (
               <tr key={u.id} style={styles.tr}>
+                <td style={styles.td}>
+                  <button
+                    style={styles.checkboxBtn}
+                    onClick={() => toggleUserSelection(u.id)}
+                    aria-label={selectedUserIds.includes(u.id) ? 'Deselect' : 'Select'}
+                  >
+                    {selectedUserIds.includes(u.id)
+                      ? <CheckSquare size={17} color="var(--primary-neon)" />
+                      : <Square size={17} color="var(--text-subtle)" />}
+                  </button>
+                </td>
                 <td style={styles.tdUser} onClick={() => openDetail(u)}>
                   <div style={styles.miniAvatar}>{u.full_name[0].toUpperCase()}</div>
                   <div>
@@ -201,7 +263,7 @@ export const UserManagement = () => {
               </tr>
             ))}
             {users.length === 0 && (
-              <tr><td colSpan={4} style={styles.emptyRow}>No users found.</td></tr>
+              <tr><td colSpan={5} style={styles.emptyRow}>No users found.</td></tr>
             )}
           </tbody>
         </table>
@@ -314,6 +376,31 @@ const styles = {
     color: 'var(--text-main)',
     outline: 'none',
     fontSize: '14px',
+  },
+  bulkBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '12px 16px',
+    background: 'var(--primary-soft)',
+    border: '2px solid var(--primary-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    marginBottom: '16px',
+    flexWrap: 'wrap',
+  },
+  bulkCount: {
+    fontSize: '13px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    marginRight: 'auto',
+  },
+  checkboxBtn: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: 0,
   },
   tableWrap: {
     padding: '8px',

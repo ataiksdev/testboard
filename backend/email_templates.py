@@ -38,6 +38,7 @@ TYPE_META = {
     "bug_blocker": {"eyebrow": "Blocker Flagged", "accent": "rust", "cta_label": "View Bug"},
     "comment_mention": {"eyebrow": "You Were Mentioned", "accent": "gold", "cta_label": "View Comment"},
     "document_uploaded": {"eyebrow": "Document Uploaded", "accent": "gold", "cta_label": "View Documents"},
+    "invited": {"eyebrow": "You're Invited", "accent": "green", "cta_label": "Set Your Password"},
 }
 DEFAULT_META = {"eyebrow": "Notification", "accent": "green", "cta_label": "Open TestBoard"}
 

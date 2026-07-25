@@ -67,7 +67,9 @@ def _app_link(link: Optional[str]) -> str:
         return ""
     if not link:
         return base
-    return f"{base}/{link.lstrip('#/')}"
+    # The app uses hash-based client-side routing (window.location.hash), so
+    # the '#' must be preserved in the built URL, not stripped along with it.
+    return f"{base}/#{link.lstrip('#/')}"
 
 
 def notify(

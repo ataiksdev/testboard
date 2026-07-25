@@ -39,11 +39,57 @@ class UserOut(UserBase):
     id: int
     role: str
     is_active: bool
+    invited_role: Optional[str] = None
     created_at: datetime
 
     class Config:
         orm_mode = True
         from_attributes = True
+
+# Bulk Invite Schemas
+class BulkInviteRow(BaseModel):
+    email: EmailStr
+    role: str
+    full_name: Optional[str] = None
+
+class BulkInviteIn(BaseModel):
+    invites: List[BulkInviteRow]
+
+class BulkInviteSkip(BaseModel):
+    email: str
+    reason: str
+
+class BulkInviteResultOut(BaseModel):
+    invited: List[str]
+    skipped: List[BulkInviteSkip]
+
+class AcceptInviteIn(BaseModel):
+    token: str
+    password: str
+
+# Bulk Approve / Bulk Role Update Schemas
+class BulkApproveItem(BaseModel):
+    user_id: int
+    role: str
+
+class BulkApproveIn(BaseModel):
+    approvals: List[BulkApproveItem]
+
+class BulkRoleUpdateIn(BaseModel):
+    user_ids: List[int]
+    role: str
+
+class BulkUserActionFailure(BaseModel):
+    user_id: int
+    reason: str
+
+class BulkApproveResultOut(BaseModel):
+    approved: List[int]
+    failed: List[BulkUserActionFailure]
+
+class BulkRoleUpdateResultOut(BaseModel):
+    updated: List[int]
+    failed: List[BulkUserActionFailure]
 
 class PasswordResetRequestOut(BaseModel):
     id: int

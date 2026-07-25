@@ -1,18 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
-import { Shield, Check, X, AlertCircle, Users as UsersIcon, UserCog, KeyRound } from 'lucide-react';
+import { useToast } from './Toast';
+import { Shield, Check, X, AlertCircle, Users as UsersIcon, UserCog, KeyRound, Mail, CheckSquare, Square } from 'lucide-react';
 import { ROLES } from '../utils/roles';
 import { UserManagement } from './UserManagement';
+import { BulkInviteModal } from './BulkInviteModal';
 
 export const AdminPanel = () => {
   const [activeTab, setActiveTab] = useState('pending');
   const [pendingUsers, setPendingUsers] = useState([]);
   const [approvalRoles, setApprovalRoles] = useState({});
+  const [selectedPendingIds, setSelectedPendingIds] = useState([]);
+  const [showBulkInvite, setShowBulkInvite] = useState(false);
+  const [bulkApproving, setBulkApproving] = useState(false);
   const [pendingResets, setPendingResets] = useState([]);
   const [resetInputs, setResetInputs] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const { token, API_URL } = useAuth();
+  const { showSuccess, showError } = useToast();
 
   useEffect(() => {
     fetchPendingUsers();
@@ -37,8 +43,11 @@ export const AdminPanel = () => {
     }
   };
 
+  const roleForApproval = (user) => approvalRoles[user.id] || user.invited_role || 'QA';
+
   const handleApprove = async (userId) => {
-    const role = approvalRoles[userId] || 'QA';
+    const user = pendingUsers.find(u => u.id === userId);
+    const role = user ? roleForApproval(user) : (approvalRoles[userId] || 'QA');
     try {
       const response = await fetch(`${API_URL}/api/admin/users/${userId}/approve`, {
         method: 'POST',
@@ -50,12 +59,47 @@ export const AdminPanel = () => {
       });
       if (response.ok) {
         setPendingUsers(pendingUsers.filter(u => u.id !== userId));
+        setSelectedPendingIds(ids => ids.filter(id => id !== userId));
       } else {
         const data = await response.json();
         throw new Error(data.detail || "Approval failed");
       }
     } catch (err) {
       alert(err.message);
+    }
+  };
+
+  const togglePendingSelection = (userId) => {
+    setSelectedPendingIds(prev => prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]);
+  };
+
+  const handleBulkApprove = async () => {
+    if (selectedPendingIds.length === 0) return;
+    try {
+      setBulkApproving(true);
+      const approvals = selectedPendingIds.map(userId => {
+        const user = pendingUsers.find(u => u.id === userId);
+        return { user_id: userId, role: user ? roleForApproval(user) : 'QA' };
+      });
+      const response = await fetch(`${API_URL}/api/admin/users/bulk-approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ approvals })
+      });
+      if (!response.ok) throw new Error('Bulk approve failed');
+      const result = await response.json();
+      setPendingUsers(users => users.filter(u => !result.approved.includes(u.id)));
+      setSelectedPendingIds(ids => ids.filter(id => !result.approved.includes(id)));
+      if (result.failed.length > 0) {
+        showError(`${result.approved.length} approved. ${result.failed.length} failed: ` +
+          result.failed.map(f => `#${f.user_id}: ${f.reason}`).join('; '));
+      } else {
+        showSuccess(`${result.approved.length} user(s) approved.`);
+      }
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBulkApproving(false);
     }
   };
 
@@ -184,9 +228,14 @@ export const AdminPanel = () => {
           <div style={styles.loading}>Loading pending access requests...</div>
         ) : (
           <div className="glass-panel" style={styles.panel}>
-            <div style={styles.panelHeader}>
-              <UsersIcon size={18} color="var(--text-muted)" />
-              <h3 style={styles.panelTitle}>Pending Access Requests ({pendingUsers.length})</h3>
+            <div style={styles.panelHeaderRow}>
+              <div style={styles.panelHeaderTitleGroup}>
+                <UsersIcon size={18} color="var(--text-muted)" />
+                <h3 style={styles.panelTitle}>Pending Access Requests ({pendingUsers.length})</h3>
+              </div>
+              <button className="btn-secondary" style={styles.bulkInviteBtn} onClick={() => setShowBulkInvite(true)}>
+                <Mail size={15} /> Bulk Invite (CSV)
+              </button>
             </div>
 
             {pendingUsers.length === 0 ? (
@@ -195,47 +244,86 @@ export const AdminPanel = () => {
                 <p style={{ color: 'var(--text-muted)' }}>All clear! No pending access requests.</p>
               </div>
             ) : (
-              <div style={styles.list}>
-                {pendingUsers.map(user => (
-                  <div key={user.id} style={styles.userRow} className="animate-slide-up">
-                    <div style={styles.userInfo}>
-                      <div style={styles.avatar}>{user.full_name[0].toUpperCase()}</div>
-                      <div>
-                        <h4 style={styles.name}>{user.full_name}</h4>
-                        <span style={styles.email}>{user.email}</span>
-                      </div>
-                    </div>
-                    <div style={styles.actions}>
-                      <select
-                        value={approvalRoles[user.id] || 'QA'}
-                        onChange={(e) => setApprovalRoles(r => ({ ...r, [user.id]: e.target.value }))}
-                        style={styles.roleSelect}
-                      >
-                        {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                      <button
-                        onClick={() => handleApprove(user.id)}
-                        className="btn-primary"
-                        style={styles.approveBtn}
-                      >
-                        <Check size={16} />
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => handleReject(user.id)}
-                        className="btn-danger"
-                        style={styles.rejectBtn}
-                      >
-                        <X size={16} />
-                        Decline
-                      </button>
-                    </div>
+              <>
+                {selectedPendingIds.length > 0 && (
+                  <div style={styles.bulkBar}>
+                    <span style={styles.bulkCount}>{selectedPendingIds.length} selected</span>
+                    <button
+                      className="btn-primary"
+                      style={styles.approveBtn}
+                      onClick={handleBulkApprove}
+                      disabled={bulkApproving}
+                    >
+                      <Check size={16} />
+                      {bulkApproving ? 'Approving...' : 'Approve Selected'}
+                    </button>
+                    <button className="btn-secondary" style={styles.approveBtn} onClick={() => setSelectedPendingIds([])}>
+                      Clear
+                    </button>
                   </div>
-                ))}
-              </div>
+                )}
+                <div style={styles.list}>
+                  {pendingUsers.map(user => {
+                    const selected = selectedPendingIds.includes(user.id);
+                    return (
+                      <div key={user.id} style={styles.userRow} className="animate-slide-up">
+                        <div style={styles.userInfo}>
+                          <button
+                            style={styles.checkboxBtn}
+                            onClick={() => togglePendingSelection(user.id)}
+                            aria-label={selected ? 'Deselect' : 'Select'}
+                          >
+                            {selected ? <CheckSquare size={18} color="var(--primary-neon)" /> : <Square size={18} color="var(--text-subtle)" />}
+                          </button>
+                          <div style={styles.avatar}>{user.full_name[0].toUpperCase()}</div>
+                          <div>
+                            <h4 style={styles.name}>
+                              {user.full_name}
+                              {user.invited_role && <span style={styles.invitedBadge}>Invited</span>}
+                            </h4>
+                            <span style={styles.email}>{user.email}</span>
+                          </div>
+                        </div>
+                        <div style={styles.actions}>
+                          <select
+                            value={roleForApproval(user)}
+                            onChange={(e) => setApprovalRoles(r => ({ ...r, [user.id]: e.target.value }))}
+                            style={styles.roleSelect}
+                          >
+                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                          <button
+                            onClick={() => handleApprove(user.id)}
+                            className="btn-primary"
+                            style={styles.approveBtn}
+                          >
+                            <Check size={16} />
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => handleReject(user.id)}
+                            className="btn-danger"
+                            style={styles.rejectBtn}
+                          >
+                            <X size={16} />
+                            Decline
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
         )
+      )}
+
+      {showBulkInvite && (
+        <BulkInviteModal
+          onClose={() => setShowBulkInvite(false)}
+          onInvited={fetchPendingUsers}
+        />
       )}
 
       {activeTab === 'resets' && (
@@ -367,6 +455,66 @@ const styles = {
     borderBottom: '2px solid var(--glass-border)',
     paddingBottom: '16px',
     marginBottom: '16px',
+  },
+  panelHeaderRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '12px',
+    borderBottom: '2px solid var(--glass-border)',
+    paddingBottom: '16px',
+    marginBottom: '16px',
+  },
+  panelHeaderTitleGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  bulkInviteBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 14px',
+    fontSize: '13px',
+  },
+  bulkBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '12px 16px',
+    background: 'var(--primary-soft)',
+    border: '2px solid var(--primary-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    marginBottom: '16px',
+  },
+  bulkCount: {
+    fontSize: '13px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    marginRight: 'auto',
+  },
+  checkboxBtn: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: 0,
+    flexShrink: 0,
+  },
+  invitedBadge: {
+    marginLeft: '8px',
+    padding: '2px 6px',
+    fontSize: '10px',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    color: 'var(--primary-neon)',
+    background: 'var(--primary-soft)',
+    border: '1px solid var(--primary-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    verticalAlign: 'middle',
   },
   panelTitle: {
     fontSize: '16px',

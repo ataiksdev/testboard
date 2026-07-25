@@ -3,6 +3,7 @@ import datetime
 import io
 import json
 import re
+import secrets
 from pathlib import Path
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile, BackgroundTasks
@@ -23,11 +24,14 @@ load_dotenv()
 from backend.database import engine, Base, get_db, SessionLocal
 from backend.models import (
     User, Project, Version, Component, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
-    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, BugComponent, SavedBugFilter
+    PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, BugComponent, SavedBugFilter,
+    UserInviteToken
 )
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
     PasswordResetRequestCreate, PasswordResetRequestOut, PasswordResetResolve,
+    BulkInviteIn, BulkInviteResultOut, AcceptInviteIn,
+    BulkApproveIn, BulkApproveResultOut, BulkRoleUpdateIn, BulkRoleUpdateResultOut,
     ASSIGNABLE_ROLES,
     ProjectCreate, ProjectOut, ProjectUpdate,
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
@@ -173,6 +177,8 @@ def ensure_sqlite_schema():
         }
         if "is_active" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+        if "invited_role" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN invited_role VARCHAR"))
 
         project_columns = {
             row[1]
@@ -411,6 +417,32 @@ def forgot_password(request_in: PasswordResetRequestCreate, background_tasks: Ba
 
     return generic_response
 
+@app.post("/api/auth/accept-invite")
+def accept_invite(accept_in: AcceptInviteIn, db: Session = Depends(get_db)):
+    invite_token = db.query(UserInviteToken).filter(UserInviteToken.token == accept_in.token).first()
+    if not invite_token:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite link")
+    if invite_token.used_at is not None:
+        raise HTTPException(status_code=400, detail="This invite link has already been used")
+    if invite_token.expires_at < datetime.datetime.utcnow():
+        raise HTTPException(status_code=400, detail="This invite link has expired")
+    if len(accept_in.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    user = invite_token.user
+    user.hashed_password = get_password_hash(accept_in.password)
+    invite_token.used_at = datetime.datetime.utcnow()
+    db.commit()
+
+    still_pending = user.role == "Pending"
+    return {
+        "message": (
+            "Password set. An administrator must still approve your account before you can sign in."
+            if still_pending else
+            "Password set. You can now sign in."
+        )
+    }
+
 
 # ==================== NOTIFICATIONS ENDPOINTS ====================
 
@@ -461,6 +493,67 @@ def mark_all_notifications_read(current_user: User = Depends(get_current_user), 
 @app.get("/api/admin/users/pending", response_model=List[UserOut])
 def get_pending_users(admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
     return db.query(User).filter(User.role == "Pending").all()
+
+INVITE_TOKEN_EXPIRY_DAYS = 7
+
+def _derive_full_name(email: str) -> str:
+    local = email.split("@")[0]
+    parts = re.split(r"[._\-+]+", local)
+    return " ".join(p.capitalize() for p in parts if p) or local
+
+@app.post("/api/admin/users/bulk-invite", response_model=BulkInviteResultOut)
+def bulk_invite_users(bulk_in: BulkInviteIn, background_tasks: BackgroundTasks, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    if not os.getenv("TESTBOARD_APP_URL"):
+        raise HTTPException(
+            status_code=400,
+            detail="TESTBOARD_APP_URL must be configured before inviting users — it's required to build the set-password link sent in the invite email."
+        )
+
+    invited = []
+    skipped = []
+    for row in bulk_in.invites:
+        email = row.email.lower()
+
+        if row.role not in ASSIGNABLE_ROLES:
+            skipped.append({"email": email, "reason": f"Invalid role '{row.role}'"})
+            continue
+
+        if db.query(User).filter(User.email == email).first():
+            skipped.append({"email": email, "reason": "Email already registered"})
+            continue
+
+        new_user = User(
+            email=email,
+            hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+            full_name=row.full_name or _derive_full_name(email),
+            role="Pending",
+            invited_role=row.role,
+        )
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        token = secrets.token_urlsafe(32)
+        db.add(UserInviteToken(
+            user_id=new_user.id,
+            token=token,
+            expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=INVITE_TOKEN_EXPIRY_DAYS),
+        ))
+        db.commit()
+
+        notify(
+            db,
+            new_user.id,
+            notif_type="invited",
+            title="You've been invited to TestBoard",
+            body=f"{admin.full_name} invited you to join TestBoard as {row.role}. Set your password to get started.",
+            link=f"#accept-invite?token={token}",
+            background_tasks=background_tasks,
+            email=True,
+        )
+        invited.append(email)
+
+    return {"invited": invited, "skipped": skipped}
 
 @app.get("/api/admin/password-resets/pending", response_model=List[PasswordResetRequestOut])
 def get_pending_password_resets(admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
@@ -521,6 +614,18 @@ def approve_user(user_id: int, approval: UserApprove, background_tasks: Backgrou
     )
 
     return user
+
+@app.post("/api/admin/users/bulk-approve", response_model=BulkApproveResultOut)
+def bulk_approve_users(bulk_in: BulkApproveIn, background_tasks: BackgroundTasks, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    approved = []
+    failed = []
+    for item in bulk_in.approvals:
+        try:
+            approve_user(user_id=item.user_id, approval=UserApprove(role=item.role), background_tasks=background_tasks, admin=admin, db=db)
+            approved.append(item.user_id)
+        except HTTPException as e:
+            failed.append({"user_id": item.user_id, "reason": e.detail})
+    return {"approved": approved, "failed": failed}
 
 @app.post("/api/admin/users/{user_id}/reject")
 def reject_user(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
@@ -591,6 +696,18 @@ def update_user_admin(user_id: int, update: UserUpdate, background_tasks: Backgr
         )
 
     return user
+
+@app.patch("/api/admin/users/bulk-role-update", response_model=BulkRoleUpdateResultOut)
+def bulk_role_update(bulk_in: BulkRoleUpdateIn, background_tasks: BackgroundTasks, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    updated = []
+    failed = []
+    for user_id in bulk_in.user_ids:
+        try:
+            update_user_admin(user_id=user_id, update=UserUpdate(role=bulk_in.role), background_tasks=background_tasks, admin=admin, db=db)
+            updated.append(user_id)
+        except HTTPException as e:
+            failed.append({"user_id": user_id, "reason": e.detail})
+    return {"updated": updated, "failed": failed}
 
 @app.get("/api/admin/users/{user_id}/activity", response_model=List[ActivityLogOut])
 def get_user_activity(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):

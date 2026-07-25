@@ -12,6 +12,7 @@ class User(Base):
     full_name = Column(String, nullable=False)
     role = Column(String, default="Pending")  # Pending, Admin, PM, Dev, QA, BA, Guest
     is_active = Column(Boolean, default=True, nullable=False)
+    invited_role = Column(String, nullable=True)  # role an Admin picked when bulk-inviting; pre-fills the approval UI
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Relationships
@@ -22,6 +23,19 @@ class User(Base):
     comments = relationship("Comment", back_populates="user")
     activities = relationship("ActivityLog", back_populates="user")
     project_memberships = relationship("ProjectMember", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserInviteToken(Base):
+    __tablename__ = "user_invite_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
 
 
 class Project(Base):
