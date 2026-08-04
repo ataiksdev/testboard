@@ -8,6 +8,7 @@ import { useToast } from './Toast';
 import { formatDateTimeWAT } from '../utils/datetime';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { DocumentUploadModal } from './DocumentUploadModal';
+import { ProjectDocumentStats } from './ProjectDocumentStats';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -727,6 +728,7 @@ export const ProjectDetailView = ({
                 </button>
               )}
             </div>
+            <ProjectDocumentStats documents={projectDocuments} versions={projectVersions} />
             {projectDocuments.length === 0 ? (
               <p style={styles.noComments}>No documents uploaded yet.</p>
             ) : visibleDocuments.length === 0 ? (

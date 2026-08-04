@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { DocumentUploadModal } from './DocumentUploadModal';
+import { ProjectDocumentStats } from './ProjectDocumentStats';
 
 const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Addendum", "Other"];
 
@@ -264,6 +265,10 @@ export const DocumentsHub = () => {
                 {project.name}
                 <span style={styles.projectKeyTag}>{project.key}</span>
               </h4>
+              <ProjectDocumentStats
+                documents={documentsByProject[project.id] || []}
+                versions={versionsByProject[project.id] || []}
+              />
               <div style={styles.docList}>
                 {docs.map(doc => (
                   <div key={doc.id} style={styles.docRow}>
