@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft, Pencil, Users, UserPlus, X, GitBranch, Tag as TagIcon,
   FileText, Download, Trash2, Upload, MessageSquare, Building2, UserCheck,
-  Briefcase, BarChart3, ChevronRight
+  Briefcase, BarChart3, ChevronRight, Search, History
 } from 'lucide-react';
 import { useToast } from './Toast';
 import { formatDateTimeWAT } from '../utils/datetime';
+import { DocumentPreviewModal } from './DocumentPreviewModal';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -75,8 +76,11 @@ export const ProjectDetailView = ({
   const [docTitle, setDocTitle] = useState('');
   const [docType, setDocType] = useState('BRD');
   const [docVersionId, setDocVersionId] = useState('');
+  const [docReplacesId, setDocReplacesId] = useState('');
   const [docFile, setDocFile] = useState(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [docSearch, setDocSearch] = useState('');
+  const [previewDoc, setPreviewDoc] = useState(null);
 
   // EOD comments
   const [projectComments, setProjectComments] = useState([]);
@@ -98,7 +102,10 @@ export const ProjectDetailView = ({
     setDocTitle('');
     setDocType('BRD');
     setDocVersionId('');
+    setDocReplacesId('');
     setDocFile(null);
+    setDocSearch('');
+    setPreviewDoc(null);
     setNewCommentText('');
     setMentionedUserIds([]);
     setMentionQuery(null);
@@ -237,10 +244,12 @@ export const ProjectDetailView = ({
         title: docTitle.trim(),
         docType,
         versionId: docVersionId || undefined,
+        replacesId: docReplacesId || undefined,
       });
       setDocTitle('');
       setDocType('BRD');
       setDocVersionId('');
+      setDocReplacesId('');
       setDocFile(null);
       fetchProjectDocuments();
       showSuccess("Document uploaded successfully.");
@@ -710,18 +719,53 @@ export const ProjectDetailView = ({
           </>
         )}
 
-        {activeTab === 'documents' && (
+        {activeTab === 'documents' && (() => {
+          const supersededIds = new Set(projectDocuments.filter(d => d.replaces_document_id).map(d => d.replaces_document_id));
+          const latestDocuments = projectDocuments.filter(d => !supersededIds.has(d.id));
+          const revisionCountFor = (doc) => {
+            const byId = Object.fromEntries(projectDocuments.map(d => [d.id, d]));
+            let count = 0;
+            let cursor = doc;
+            while (cursor.replaces_document_id && byId[cursor.replaces_document_id]) {
+              cursor = byId[cursor.replaces_document_id];
+              count += 1;
+            }
+            return count;
+          };
+          const searchTerm = docSearch.trim().toLowerCase();
+          const visibleDocuments = searchTerm
+            ? latestDocuments.filter(d =>
+                d.title.toLowerCase().includes(searchTerm) ||
+                d.original_filename.toLowerCase().includes(searchTerm) ||
+                d.doc_type.toLowerCase().includes(searchTerm))
+            : latestDocuments;
+
+          return (
           <div style={styles.detailSection}>
             <h4 style={styles.detailTitle}>
               <FileText size={16} style={{ marginRight: '6px' }} />
-              Project Documents ({projectDocuments.length})
+              Project Documents ({latestDocuments.length})
             </h4>
+            {projectDocuments.length > 0 && (
+              <div style={styles.docSearchWrap}>
+                <Search size={14} color="var(--text-muted)" />
+                <input
+                  type="text"
+                  value={docSearch}
+                  onChange={(e) => setDocSearch(e.target.value)}
+                  placeholder="Search documents by title, filename, or type..."
+                  style={styles.docSearchInput}
+                />
+              </div>
+            )}
             {projectDocuments.length === 0 ? (
               <p style={styles.noComments}>No documents uploaded yet.</p>
+            ) : visibleDocuments.length === 0 ? (
+              <p style={styles.noComments}>No documents match "{docSearch}".</p>
             ) : (
               [
-                { key: 'unversioned', label: 'General (No Version)', docs: projectDocuments.filter(d => !d.version_id || !projectVersions.some(v => v.id === d.version_id)) },
-                ...projectVersions.map(v => ({ key: v.id, label: v.version_name, docs: projectDocuments.filter(d => d.version_id === v.id) })),
+                { key: 'unversioned', label: 'General (No Version)', docs: visibleDocuments.filter(d => !d.version_id || !projectVersions.some(v => v.id === d.version_id)) },
+                ...projectVersions.map(v => ({ key: v.id, label: v.version_name, docs: visibleDocuments.filter(d => d.version_id === v.id) })),
               ].filter(group => group.docs.length > 0).map(group => (
                 <div key={group.key} style={styles.docVersionGroup}>
                   <h5 style={styles.docVersionGroupTitle}>
@@ -732,8 +776,16 @@ export const ProjectDetailView = ({
                     {group.docs.map(doc => (
                       <div key={doc.id} style={styles.docRow}>
                         <span style={styles.docTypeBadge}>{doc.doc_type}</span>
-                        <div style={styles.docInfo}>
-                          <span style={styles.teamName}>{doc.title}</span>
+                        <div style={styles.docInfo} onClick={() => setPreviewDoc(doc)}>
+                          <span style={styles.teamName}>
+                            {doc.title}
+                            {revisionCountFor(doc) > 0 && (
+                              <span style={styles.revisionBadge} title="Has revision history">
+                                <History size={10} style={{ marginRight: '3px' }} />
+                                {revisionCountFor(doc)}
+                              </span>
+                            )}
+                          </span>
                           <span style={styles.docMeta}>
                             {doc.original_filename} · {formatFileSize(doc.file_size)} · {doc.uploaded_by.full_name}
                           </span>
@@ -767,14 +819,20 @@ export const ProjectDetailView = ({
                     {documentTypes.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
-                {projectVersions.length > 0 && (
-                  <div style={styles.row}>
+                <div style={styles.row}>
+                  {projectVersions.length > 0 && (
                     <select value={docVersionId} onChange={(e) => setDocVersionId(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
                       <option value="">No specific version</option>
                       {projectVersions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
                     </select>
-                  </div>
-                )}
+                  )}
+                  {latestDocuments.length > 0 && (
+                    <select value={docReplacesId} onChange={(e) => setDocReplacesId(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
+                      <option value="">Replaces (optional)</option>
+                      {latestDocuments.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
+                    </select>
+                  )}
+                </div>
                 <div style={styles.row}>
                   <input
                     type="file"
@@ -794,8 +852,27 @@ export const ProjectDetailView = ({
                 </div>
               </form>
             )}
+
+            {previewDoc && (
+              <DocumentPreviewModal
+                document={previewDoc}
+                documents={projectDocuments}
+                versions={projectVersions}
+                documentTypes={documentTypes}
+                projectMembers={projectMembers}
+                canEdit={canEdit}
+                token={token}
+                API_URL={API_URL}
+                onClose={() => setPreviewDoc(null)}
+                onUpdated={(updated) => {
+                  setProjectDocuments(docs => docs.map(d => d.id === updated.id ? updated : d));
+                  setPreviewDoc(updated);
+                }}
+              />
+            )}
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );
@@ -1217,6 +1294,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     gap: '2px',
+    cursor: 'pointer',
   },
   docMeta: {
     fontSize: '11px',
@@ -1230,6 +1308,37 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     flexShrink: 0,
+  },
+  docSearchWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '8px 12px',
+    marginBottom: '14px',
+  },
+  docSearchInput: {
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    color: 'var(--text-main)',
+    fontSize: '13px',
+    width: '100%',
+  },
+  revisionBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    marginLeft: '8px',
+    padding: '1px 6px',
+    fontSize: '10px',
+    fontWeight: '700',
+    color: 'var(--accent-mustard)',
+    background: 'rgba(217, 166, 46, 0.14)',
+    border: '1px solid var(--accent-mustard)',
+    borderRadius: 'var(--border-radius-sm)',
+    verticalAlign: 'middle',
   },
   docUploadForm: {
     display: 'flex',

@@ -144,11 +144,12 @@ export const ProjectTracker = ({ onSelectProject }) => {
     setStagedDocs(prev => prev.filter((_, i) => i !== index));
   };
 
-  const uploadDocumentToProject = async (projectId, { file, title, docType, versionId }) => {
+  const uploadDocumentToProject = async (projectId, { file, title, docType, versionId, replacesId }) => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('doc_type', docType);
     if (versionId) formData.append('version_id', versionId);
+    if (replacesId) formData.append('replaces_document_id', replacesId);
     formData.append('file', file);
 
     const response = await fetch(`${API_URL}/api/projects/${projectId}/documents`, {

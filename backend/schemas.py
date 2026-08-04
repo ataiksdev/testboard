@@ -171,12 +171,19 @@ class ProjectDocumentOut(BaseModel):
     original_filename: str
     content_type: Optional[str] = None
     file_size: Optional[int] = None
+    replaces_document_id: Optional[int] = None
     uploaded_by: UserOut
     created_at: datetime
 
     class Config:
         orm_mode = True
         from_attributes = True
+
+class ProjectDocumentUpdate(BaseModel):
+    title: Optional[str] = None
+    doc_type: Optional[str] = None
+    version_id: Optional[int] = None
+    clear_version: bool = False
 
 # Notification Schemas
 class NotificationOut(BaseModel):
@@ -236,6 +243,7 @@ class CommentBase(BaseModel):
     text: str
     project_id: Optional[int] = None
     bug_id: Optional[int] = None
+    document_id: Optional[int] = None
 
 class CommentCreate(CommentBase):
     mentioned_user_ids: List[int] = []

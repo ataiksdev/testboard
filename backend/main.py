@@ -35,7 +35,7 @@ from backend.schemas import (
     ASSIGNABLE_ROLES,
     ProjectCreate, ProjectOut, ProjectUpdate,
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
-    ProjectDocumentOut,
+    ProjectDocumentOut, ProjectDocumentUpdate,
     NotificationOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     ComponentBase, ComponentCreate, ComponentOut,
@@ -195,6 +195,15 @@ def ensure_sqlite_schema():
         }
         if "version_id" not in document_columns:
             connection.execute(text("ALTER TABLE project_documents ADD COLUMN version_id INTEGER"))
+        if "replaces_document_id" not in document_columns:
+            connection.execute(text("ALTER TABLE project_documents ADD COLUMN replaces_document_id INTEGER"))
+
+        comment_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(comments)")).fetchall()
+        }
+        if "document_id" not in comment_columns:
+            connection.execute(text("ALTER TABLE comments ADD COLUMN document_id INTEGER"))
 
         activity_log_columns = {
             row[1]
@@ -965,6 +974,15 @@ def list_project_documents(project_id: int, current_user: User = Depends(get_cur
         .all()
     )
 
+def require_document_for_project(db: Session, document_id: int, project_id: int) -> ProjectDocument:
+    document = db.query(ProjectDocument).filter(
+        ProjectDocument.id == document_id,
+        ProjectDocument.project_id == project_id
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found for project")
+    return document
+
 @app.post("/api/projects/{project_id}/documents", response_model=ProjectDocumentOut)
 async def upload_project_document(
     project_id: int,
@@ -972,6 +990,7 @@ async def upload_project_document(
     title: str = Form(...),
     doc_type: str = Form("Other"),
     version_id: Optional[int] = Form(None),
+    replaces_document_id: Optional[int] = Form(None),
     file: UploadFile = File(...),
     current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")),
     db: Session = Depends(get_db)
@@ -979,6 +998,8 @@ async def upload_project_document(
     project = require_project(db, project_id)
     if version_id is not None:
         require_version_for_project(db, version_id, project_id)
+    if replaces_document_id is not None:
+        require_document_for_project(db, replaces_document_id, project_id)
 
     extension = DOCUMENT_MIME_TYPES.get(file.content_type)
     if not extension:
@@ -1002,7 +1023,8 @@ async def upload_project_document(
         file_url=file_url,
         original_filename=file.filename or f"document.{extension}",
         content_type=file.content_type,
-        file_size=len(content)
+        file_size=len(content),
+        replaces_document_id=replaces_document_id,
     )
     db.add(document)
     db.commit()
@@ -1050,6 +1072,30 @@ def delete_project_document(
     db.delete(document)
     db.commit()
     return {"message": "Document deleted"}
+
+@app.put("/api/projects/{project_id}/documents/{document_id}", response_model=ProjectDocumentOut)
+def update_project_document(
+    project_id: int,
+    document_id: int,
+    update: ProjectDocumentUpdate,
+    current_user: User = Depends(require_roles("Admin", "PM", "QA", "BA")),
+    db: Session = Depends(get_db)
+):
+    document = require_document_for_project(db, document_id, project_id)
+
+    if update.title is not None:
+        document.title = update.title
+    if update.doc_type is not None:
+        document.doc_type = update.doc_type
+    if update.clear_version:
+        document.version_id = None
+    elif update.version_id is not None:
+        require_version_for_project(db, update.version_id, project_id)
+        document.version_id = update.version_id
+
+    db.commit()
+    db.refresh(document)
+    return document
 
 
 # ==================== BUGS ENDPOINTS ====================
@@ -1661,10 +1707,11 @@ def delete_saved_bug_filter(filter_id: int, current_user: User = Depends(get_cur
 
 @app.post("/api/comments", response_model=CommentOut)
 def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Requires at least project_id or bug_id
-    if not comment_in.project_id and not comment_in.bug_id:
-        raise HTTPException(status_code=400, detail="Comment must belong to a project or a bug")
+    # Requires at least project_id, bug_id, or document_id
+    if not comment_in.project_id and not comment_in.bug_id and not comment_in.document_id:
+        raise HTTPException(status_code=400, detail="Comment must belong to a project, a bug, or a document")
     bug = None
+    document = None
     if comment_in.project_id:
         require_project(db, comment_in.project_id)
     if comment_in.bug_id:
@@ -1673,11 +1720,18 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
             raise HTTPException(status_code=404, detail="Bug not found")
         if comment_in.project_id and bug.project_id != comment_in.project_id:
             raise HTTPException(status_code=400, detail="Bug does not belong to project")
+    if comment_in.document_id:
+        document = db.query(ProjectDocument).filter(ProjectDocument.id == comment_in.document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if comment_in.project_id and document.project_id != comment_in.project_id:
+            raise HTTPException(status_code=400, detail="Document does not belong to project")
 
     new_comment = Comment(
         user_id=current_user.id,
         project_id=comment_in.project_id,
         bug_id=comment_in.bug_id,
+        document_id=comment_in.document_id,
         text=comment_in.text
     )
     db.add(new_comment)
@@ -1688,7 +1742,7 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
     snippet = comment_in.text[:50] + "..." if len(comment_in.text) > 50 else comment_in.text
     log = ActivityLog(
         user_id=current_user.id,
-        project_id=comment_in.project_id,
+        project_id=comment_in.project_id or (document.project_id if document else None),
         bug_id=comment_in.bug_id,
         activity_type="comment_added",
         new_value=snippet
@@ -1726,6 +1780,31 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
                 background_tasks=background_tasks,
                 email=True,
             )
+    elif document is not None:
+        notify_project_members(
+            db,
+            document.project_id,
+            notif_type="comment_added",
+            title=f"New comment on document \"{document.title}\"",
+            body=f"{current_user.full_name}: {snippet}",
+            link="#projects",
+            background_tasks=background_tasks,
+            exclude_user_id=current_user.id,
+        )
+
+        mentioned_ids = set(comment_in.mentioned_user_ids) - {current_user.id}
+        for recipient_id in mentioned_ids:
+            notify(
+                db,
+                recipient_id,
+                notif_type="comment_mention",
+                title=f"{current_user.full_name} mentioned you on \"{document.title}\"",
+                body=f"{current_user.full_name}: {snippet}",
+                link="#projects",
+                project_id=document.project_id,
+                background_tasks=background_tasks,
+                email=True,
+            )
     elif comment_in.project_id:
         notify_project_members(
             db,
@@ -1756,10 +1835,12 @@ def create_comment(comment_in: CommentCreate, background_tasks: BackgroundTasks,
     return new_comment
 
 @app.get("/api/comments", response_model=List[CommentOut])
-def list_comments(project_id: Optional[int] = None, bug_id: Optional[int] = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_comments(project_id: Optional[int] = None, bug_id: Optional[int] = None, document_id: Optional[int] = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     query = db.query(Comment)
     if bug_id is not None:
         query = query.filter(Comment.bug_id == bug_id)
+    elif document_id is not None:
+        query = query.filter(Comment.document_id == document_id)
     elif project_id is not None:
         query = query.filter(Comment.project_id == project_id)
     return query.order_by(Comment.created_at.desc()).all()

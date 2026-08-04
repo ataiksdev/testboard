@@ -142,6 +142,7 @@ class Comment(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     bug_id = Column(Integer, ForeignKey("bugs.id"), nullable=True)
+    document_id = Column(Integer, ForeignKey("project_documents.id"), nullable=True)
     text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -149,6 +150,7 @@ class Comment(Base):
     user = relationship("User", back_populates="comments")
     project = relationship("Project", back_populates="comments")
     bug = relationship("Bug", back_populates="comments")
+    document = relationship("ProjectDocument")
 
 
 class BugAttachment(Base):
@@ -297,12 +299,14 @@ class ProjectDocument(Base):
     original_filename = Column(String, nullable=False)
     content_type = Column(String, nullable=True)
     file_size = Column(Integer, nullable=True)
+    replaces_document_id = Column(Integer, ForeignKey("project_documents.id"), nullable=True)  # revision chain: this doc supersedes that one
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     # Relationships
     project = relationship("Project", back_populates="documents")
     version = relationship("Version")
     uploaded_by = relationship("User")
+    replaces = relationship("ProjectDocument", remote_side=[id])
 
 
 class SavedBugFilter(Base):

@@ -1629,6 +1629,134 @@ def test_version_scoped_document_upload(tmp_path, monkeypatch):
     assert resp.json()["version_id"] is None
 
 
+def test_document_revision_history(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    project_a = client.post("/api/projects", json={"name": "Revision Proj A", "key": "REVA"}, headers=admin_headers).json()
+    project_b = client.post("/api/projects", json={"name": "Revision Proj B", "key": "REVB"}, headers=admin_headers).json()
+
+    doc_v1 = client.post(
+        f"/api/projects/{project_a['id']}/documents",
+        headers=admin_headers,
+        data={"title": "BRD v1", "doc_type": "BRD"},
+        files={"file": ("brd_v1.pdf", b"%PDF-1.4 v1", "application/pdf")}
+    ).json()
+    assert doc_v1["replaces_document_id"] is None
+
+    doc_v2 = client.post(
+        f"/api/projects/{project_a['id']}/documents",
+        headers=admin_headers,
+        data={"title": "BRD v2", "doc_type": "BRD", "replaces_document_id": str(doc_v1["id"])},
+        files={"file": ("brd_v2.pdf", b"%PDF-1.4 v2", "application/pdf")}
+    ).json()
+    assert doc_v2["replaces_document_id"] == doc_v1["id"]
+
+    # A replaces_document_id from a different project is rejected
+    resp = client.post(
+        f"/api/projects/{project_b['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Cross-project revision", "doc_type": "BRD", "replaces_document_id": str(doc_v1["id"])},
+        files={"file": ("brd.pdf", b"%PDF-1.4", "application/pdf")}
+    )
+    assert resp.status_code == 404
+
+    docs = client.get(f"/api/projects/{project_a['id']}/documents", headers=admin_headers).json()
+    by_id = {d["id"]: d for d in docs}
+    assert by_id[doc_v2["id"]]["replaces_document_id"] == doc_v1["id"]
+
+
+def test_update_project_document_metadata(tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Rename Proj", "key": "RNP"}, headers=admin_headers).json()
+    version = client.post(f"/api/projects/{project['id']}/versions", json={"version_name": "v1.0"}, headers=admin_headers).json()
+    doc = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Old Title", "doc_type": "Other"},
+        files={"file": ("f.txt", b"content", "text/plain")}
+    ).json()
+
+    resp = client.put(
+        f"/api/projects/{project['id']}/documents/{doc['id']}",
+        json={"title": "New Title", "doc_type": "BRD", "version_id": version["id"]},
+        headers=admin_headers
+    )
+    assert resp.status_code == 200
+    updated = resp.json()
+    assert updated["title"] == "New Title"
+    assert updated["doc_type"] == "BRD"
+    assert updated["version_id"] == version["id"]
+
+    # Omitting version_id leaves it untouched
+    resp = client.put(
+        f"/api/projects/{project['id']}/documents/{doc['id']}",
+        json={"title": "Newer Title"},
+        headers=admin_headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["version_id"] == version["id"]
+
+    # clear_version explicitly nulls it
+    resp = client.put(
+        f"/api/projects/{project['id']}/documents/{doc['id']}",
+        json={"clear_version": True},
+        headers=admin_headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["version_id"] is None
+
+    # Dev (not in Admin/PM/QA/BA) cannot rename
+    dev_headers, _ = _make_user_with_role(admin_headers, "renamedev@test.com", "Rename Dev", "Dev")
+    resp = client.put(
+        f"/api/projects/{project['id']}/documents/{doc['id']}",
+        json={"title": "Hacked"},
+        headers=dev_headers
+    )
+    assert resp.status_code == 403
+
+
+def test_document_comments(fake_smtp, tmp_path, monkeypatch):
+    from backend.storage import LocalDiskStorage
+    monkeypatch.setattr("backend.main.get_storage_backend", lambda: LocalDiskStorage(base_dir=tmp_path))
+
+    admin_headers = _make_admin()
+    qa_headers, qa_id = _make_user_with_role(admin_headers, "docqa@test.com", "Doc QA", "QA")
+    project = client.post("/api/projects", json={"name": "Doc Comment Proj", "key": "DCP"}, headers=admin_headers).json()
+    client.post(f"/api/projects/{project['id']}/members", json={"user_id": qa_id}, headers=admin_headers)
+    doc = client.post(
+        f"/api/projects/{project['id']}/documents",
+        headers=admin_headers,
+        data={"title": "Reviewable Doc", "doc_type": "BRD"},
+        files={"file": ("f.txt", b"content", "text/plain")}
+    ).json()
+
+    fake_smtp.instances = []
+    resp = client.post("/api/comments", json={
+        "document_id": doc["id"], "text": "Looks good, one nit @Doc QA", "mentioned_user_ids": [qa_id]
+    }, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["document_id"] == doc["id"]
+
+    comments = client.get(f"/api/comments?document_id={doc['id']}", headers=admin_headers).json()
+    assert len(comments) == 1
+    assert comments[0]["text"] == "Looks good, one nit @Doc QA"
+
+    # Mentioning a project member on a document comment is email-worthy
+    assert len(fake_smtp.instances) == 1
+
+    resp = client.get(f"/api/notifications", headers=qa_headers)
+    assert any(n["type"] == "comment_mention" for n in resp.json())
+
+    # A comment with none of project_id/bug_id/document_id is rejected
+    resp = client.post("/api/comments", json={"text": "orphan comment"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+
 def test_project_pm_lead_field():
     admin_headers = _make_admin()
     pm_headers, pm_id = _make_user_with_role(admin_headers, "pmlead@test.com", "PM Lead Person", "PM")
