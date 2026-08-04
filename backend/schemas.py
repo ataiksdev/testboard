@@ -201,6 +201,28 @@ class NotificationOut(BaseModel):
         orm_mode = True
         from_attributes = True
 
+# Report Subscription Schemas
+class ReportSubscriptionCreate(BaseModel):
+    user_id: int
+    project_id: int
+
+class ReportSubscriptionUpdate(BaseModel):
+    is_active: bool
+
+class ReportSubscriptionOut(BaseModel):
+    id: int
+    user_id: int
+    project_id: int
+    is_active: bool
+    last_sent_at: Optional[datetime] = None
+    created_at: datetime
+    user: UserOut
+    project: UserProjectOut
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Version Schemas
 class VersionBase(BaseModel):
     version_name: str
@@ -450,6 +472,15 @@ class OwnerWorkloadOut(BaseModel):
     resolved_in_period: int
     avg_resolution_hours: Optional[float] = None
 
+class BugTrendPoint(BaseModel):
+    date: str
+    opened: int
+    resolved: int
+
+class BugTrendOut(BaseModel):
+    bucket_days: int
+    points: List[BugTrendPoint]
+
 class ReportDataOut(BaseModel):
     start_date: datetime
     end_date: datetime
@@ -459,6 +490,7 @@ class ReportDataOut(BaseModel):
     bug_metrics: BugReportMetric
     severity_breakdown: Dict[str, int]
     status_breakdown: Dict[str, int]
+    bug_trend: BugTrendOut
     version_readiness: List[VersionReadinessOut]
     team_workload: List[OwnerWorkloadOut]
     activity_timeline: List[ActivityLogOut]

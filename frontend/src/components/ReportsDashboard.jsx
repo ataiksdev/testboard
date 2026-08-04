@@ -2,10 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../utils/auth';
 import { formatDateTimeWAT, formatDateWAT } from '../utils/datetime';
 import {
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement,
+  BarElement, ArcElement, Tooltip, Legend
+} from 'chart.js';
+import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import {
   FileText, Calendar, Printer, Copy, Check,
   Bug as BugIcon, AlertTriangle, ArrowRight, MessageSquare, RefreshCw,
-  FolderKanban, CheckCircle, Users, GitBranch, BarChart3
+  FolderKanban, CheckCircle, Users, GitBranch, BarChart3, TrendingUp
 } from 'lucide-react';
+import { ReportSubscriptionsPanel } from './ReportSubscriptionsPanel';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Tooltip, Legend);
+
+// Resolved fresh (not memoized) so charts stay correct if the user toggles
+// light/dark theme — canvas fillStyle/strokeStyle can't consume var(--x) directly.
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const SEVERITY_ORDER = ['Low', 'Medium', 'High', 'Critical'];
 const SEVERITY_COLORS = {
@@ -14,7 +26,12 @@ const SEVERITY_COLORS = {
   High: 'var(--sev-high)',
   Critical: 'var(--sev-critical)',
 };
+const SEVERITY_VARS = { Low: '--sev-low', Medium: '--sev-medium', High: '--sev-high', Critical: '--sev-critical' };
 const STATUS_ORDER = ['Open', 'In Progress', 'In QA', 'Resolved', 'Closed'];
+const STATUS_VARS = {
+  'Open': '--bug-open', 'In Progress': '--bug-inprogress', 'In QA': '--bug-inqa',
+  'Resolved': '--bug-resolved', 'Closed': '--bug-closed',
+};
 const VERSION_STATUS_COLOR = {
   Planning: 'var(--text-muted)',
   QA: 'var(--accent-mustard)',
@@ -74,6 +91,16 @@ const DistributionBar = ({ label, count, total, color }) => {
   );
 };
 
+const chartLegendOptions = () => ({
+  position: 'top',
+  labels: { color: cssVar('--text-muted'), font: { size: 12, weight: '600' }, boxWidth: 14, padding: 14 },
+});
+
+const chartGridOptions = () => ({
+  grid: { color: cssVar('--glass-border') },
+  ticks: { color: cssVar('--text-subtle'), font: { size: 11 } },
+});
+
 export const ReportsDashboard = () => {
   const getPastDateStr = (daysAgo) => {
     const d = new Date();
@@ -93,7 +120,7 @@ export const ReportsDashboard = () => {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const { token, API_URL } = useAuth();
+  const { token, API_URL, user } = useAuth();
 
   const fetchProjects = async () => {
     try {
@@ -184,6 +211,94 @@ export const ReportsDashboard = () => {
     : 0;
   const showProjectColumn = !projectId;
 
+  const trendChartData = reportData ? {
+    labels: reportData.bug_trend.points.map(p => p.date),
+    datasets: [
+      {
+        label: 'Opened',
+        data: reportData.bug_trend.points.map(p => p.opened),
+        borderColor: cssVar('--accent-mustard'),
+        backgroundColor: cssVar('--accent-mustard'),
+        tension: 0.25,
+        pointRadius: 3,
+        borderWidth: 2,
+      },
+      {
+        label: 'Resolved',
+        data: reportData.bug_trend.points.map(p => p.resolved),
+        borderColor: cssVar('--primary-neon'),
+        backgroundColor: cssVar('--primary-neon'),
+        tension: 0.25,
+        pointRadius: 3,
+        borderWidth: 2,
+      },
+    ],
+  } : null;
+  const trendChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: chartLegendOptions(), tooltip: { enabled: true } },
+    scales: {
+      x: chartGridOptions(),
+      y: { beginAtZero: true, ticks: { ...chartGridOptions().ticks, precision: 0 }, grid: chartGridOptions().grid },
+    },
+  };
+
+  const severityChartData = severityTotal > 0 ? {
+    labels: SEVERITY_ORDER,
+    datasets: [{
+      data: SEVERITY_ORDER.map(k => reportData.severity_breakdown[k] || 0),
+      backgroundColor: SEVERITY_ORDER.map(k => cssVar(SEVERITY_VARS[k])),
+      borderColor: cssVar('--bg-elevated'),
+      borderWidth: 2,
+    }],
+  } : null;
+  const severityChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { ...chartLegendOptions(), position: 'right' }, tooltip: { enabled: true } },
+  };
+
+  const statusChartData = statusTotal > 0 ? {
+    labels: STATUS_ORDER,
+    datasets: [{
+      label: 'Bugs',
+      data: STATUS_ORDER.map(k => reportData.status_breakdown[k] || 0),
+      backgroundColor: STATUS_ORDER.map(k => cssVar(STATUS_VARS[k])),
+      borderRadius: 2,
+    }],
+  } : null;
+  const statusChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+    scales: {
+      x: chartGridOptions(),
+      y: { beginAtZero: true, ticks: { ...chartGridOptions().ticks, precision: 0 }, grid: chartGridOptions().grid },
+    },
+  };
+
+  const workloadChartData = reportData && reportData.team_workload.length > 0 ? {
+    labels: reportData.team_workload.map(w => w.full_name),
+    datasets: [{
+      label: 'Currently Assigned',
+      data: reportData.team_workload.map(w => w.open_assigned),
+      backgroundColor: cssVar('--primary-neon'),
+      borderRadius: 2,
+    }],
+  } : null;
+  const workloadChartOptions = {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+    scales: {
+      x: { beginAtZero: true, ticks: { ...chartGridOptions().ticks, precision: 0 }, grid: chartGridOptions().grid },
+      y: chartGridOptions(),
+    },
+  };
+
   return (
     <div style={styles.container} className="print-container">
       {/* Date/Scope Selectors and Action Bar (Hidden when printing) */}
@@ -255,6 +370,12 @@ export const ReportsDashboard = () => {
         </div>
       </div>
 
+      {user.role === 'Admin' && (
+        <div className="no-print" style={{ marginBottom: '24px' }}>
+          <ReportSubscriptionsPanel projects={projects} />
+        </div>
+      )}
+
       {loading && <div style={styles.loading}>Compiling periodic metrics...</div>}
 
       {reportData && !loading && (
@@ -308,6 +429,21 @@ export const ReportsDashboard = () => {
             </div>
           </div>
 
+          {/* Bugs Over Time */}
+          <div className="glass-panel" style={styles.sectionPanel}>
+            <h3 style={styles.panelTitle}>
+              <TrendingUp size={18} color="var(--primary-neon)" style={{ marginRight: '8px' }} />
+              Bugs Over Time
+            </h3>
+            {reportData.bug_trend.points.every(p => p.opened === 0 && p.resolved === 0) ? (
+              <p style={styles.emptyText}>No bug activity in this period.</p>
+            ) : (
+              <div style={styles.chartBoxTall} className="no-print">
+                <Line data={trendChartData} options={trendChartOptions} />
+              </div>
+            )}
+          </div>
+
           {/* Severity & Status Distribution */}
           <div style={styles.distGrid}>
             <div className="glass-panel" style={styles.sectionPanel}>
@@ -318,15 +454,20 @@ export const ReportsDashboard = () => {
               {severityTotal === 0 ? (
                 <p style={styles.emptyText}>No bugs logged in this period.</p>
               ) : (
-                SEVERITY_ORDER.map(key => (
-                  <DistributionBar
-                    key={key}
-                    label={key}
-                    count={reportData.severity_breakdown[key] || 0}
-                    total={severityTotal}
-                    color={SEVERITY_COLORS[key]}
-                  />
-                ))
+                <>
+                  <div style={styles.chartBox} className="no-print">
+                    <Doughnut data={severityChartData} options={severityChartOptions} />
+                  </div>
+                  {SEVERITY_ORDER.map(key => (
+                    <DistributionBar
+                      key={key}
+                      label={key}
+                      count={reportData.severity_breakdown[key] || 0}
+                      total={severityTotal}
+                      color={SEVERITY_COLORS[key]}
+                    />
+                  ))}
+                </>
               )}
             </div>
             <div className="glass-panel" style={styles.sectionPanel}>
@@ -338,15 +479,20 @@ export const ReportsDashboard = () => {
               {statusTotal === 0 ? (
                 <p style={styles.emptyText}>No bugs in scope.</p>
               ) : (
-                STATUS_ORDER.map(key => (
-                  <DistributionBar
-                    key={key}
-                    label={key}
-                    count={reportData.status_breakdown[key] || 0}
-                    total={statusTotal}
-                    color="var(--primary-neon)"
-                  />
-                ))
+                <>
+                  <div style={styles.chartBox} className="no-print">
+                    <Bar data={statusChartData} options={statusChartOptions} />
+                  </div>
+                  {STATUS_ORDER.map(key => (
+                    <DistributionBar
+                      key={key}
+                      label={key}
+                      count={reportData.status_breakdown[key] || 0}
+                      total={statusTotal}
+                      color={`var(${STATUS_VARS[key]})`}
+                    />
+                  ))}
+                </>
               )}
             </div>
           </div>
@@ -411,6 +557,10 @@ export const ReportsDashboard = () => {
             {reportData.team_workload.length === 0 ? (
               <p style={styles.emptyText}>No bugs are currently assigned in scope.</p>
             ) : (
+              <>
+              <div style={{ ...styles.chartBox, height: `${Math.max(120, reportData.team_workload.length * 34)}px` }} className="no-print">
+                <Bar data={workloadChartData} options={workloadChartOptions} />
+              </div>
               <table style={styles.table}>
                 <thead>
                   <tr>
@@ -431,6 +581,7 @@ export const ReportsDashboard = () => {
                   ))}
                 </tbody>
               </table>
+              </>
             )}
           </div>
 
@@ -692,6 +843,15 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
     gap: '16px',
+  },
+  chartBox: {
+    position: 'relative',
+    height: '220px',
+    marginBottom: '18px',
+  },
+  chartBoxTall: {
+    position: 'relative',
+    height: '280px',
   },
   distRow: {
     display: 'flex',

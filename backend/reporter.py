@@ -86,6 +86,42 @@ def _compute_team_workload(db: Session, start_date: datetime.datetime, end_date:
     return workload
 
 
+def _compute_bug_trend(db: Session, start_date: datetime.datetime, end_date: datetime.datetime, project_id=None):
+    """Opened vs resolved bug counts bucketed by day (or by week if the range is long)."""
+    span_days = max((end_date.date() - start_date.date()).days, 0)
+    bucket_days = 7 if span_days > 45 else 1
+
+    opened_bugs = _bugs_query(db, project_id).filter(
+        Bug.created_at >= start_date, Bug.created_at <= end_date
+    ).with_entities(Bug.created_at).all()
+    resolved_bugs = _bugs_query(db, project_id).filter(
+        Bug.status.in_(CLOSED_STATUSES), Bug.resolved_at >= start_date, Bug.resolved_at <= end_date
+    ).with_entities(Bug.resolved_at).all()
+
+    def bucket_key(dt):
+        day_offset = (dt.date() - start_date.date()).days
+        bucket_index = day_offset // bucket_days
+        bucket_start = start_date.date() + datetime.timedelta(days=bucket_index * bucket_days)
+        return bucket_start.isoformat()
+
+    buckets = {}
+    total_buckets = (span_days // bucket_days) + 1
+    for i in range(total_buckets):
+        key = (start_date.date() + datetime.timedelta(days=i * bucket_days)).isoformat()
+        buckets[key] = {"date": key, "opened": 0, "resolved": 0}
+
+    for (created_at,) in opened_bugs:
+        key = bucket_key(created_at)
+        if key in buckets:
+            buckets[key]["opened"] += 1
+    for (resolved_at,) in resolved_bugs:
+        key = bucket_key(resolved_at)
+        if key in buckets:
+            buckets[key]["resolved"] += 1
+
+    return {"bucket_days": bucket_days, "points": [buckets[k] for k in sorted(buckets.keys())]}
+
+
 def calculate_qa_metrics(db: Session, start_date: datetime.datetime, end_date: datetime.datetime, project_id=None):
     scope_project = db.query(Project).filter(Project.id == project_id).first() if project_id is not None else None
 
@@ -154,6 +190,7 @@ def calculate_qa_metrics(db: Session, start_date: datetime.datetime, end_date: d
 
     version_readiness = _compute_version_readiness(db, project_id)
     team_workload = _compute_team_workload(db, start_date, end_date, project_id)
+    bug_trend = _compute_bug_trend(db, start_date, end_date, project_id)
 
     # Summary Paragraph Generation
     resolved_count = len(resolved_bugs)
@@ -194,6 +231,7 @@ def calculate_qa_metrics(db: Session, start_date: datetime.datetime, end_date: d
         },
         "severity_breakdown": severity_breakdown,
         "status_breakdown": status_breakdown,
+        "bug_trend": bug_trend,
         "version_readiness": version_readiness,
         "team_workload": team_workload,
         "activity_timeline": activity_timeline,

@@ -6,7 +6,7 @@ import re
 import secrets
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Form, File, UploadFile, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,7 +25,7 @@ from backend.database import engine, Base, get_db, SessionLocal
 from backend.models import (
     User, Project, Version, Component, Bug, Comment, ActivityLog, ProjectMember, ProjectDocument,
     PasswordResetRequest, Notification, BugAttachment, BugWatcher, BugLink, BugLabel, BugComponent, SavedBugFilter,
-    UserInviteToken
+    UserInviteToken, ReportSubscription
 )
 from backend.schemas import (
     UserCreate, UserOut, UserUpdate, UserApprove, Token,
@@ -37,6 +37,7 @@ from backend.schemas import (
     ProjectMemberCreate, ProjectMemberOut, UserProjectOut,
     ProjectDocumentOut, ProjectDocumentUpdate,
     NotificationOut,
+    ReportSubscriptionCreate, ReportSubscriptionUpdate, ReportSubscriptionOut,
     VersionBase, VersionCreate, VersionOut, VersionUpdate,
     ComponentBase, ComponentCreate, ComponentOut,
     BugCreate, BugOut, BugUpdate,
@@ -1987,6 +1988,112 @@ def export_activity(
     response = StreamingResponse(io.StringIO(csv_data), media_type="text/csv")
     response.headers["Content-Disposition"] = f"attachment; filename=qa_activity_timeline_{start_date}_to_{end_date}.csv"
     return response
+
+
+# ==================== REPORT SUBSCRIPTIONS (SCHEDULED DIGESTS) ====================
+
+@app.get("/api/admin/report-subscriptions", response_model=List[ReportSubscriptionOut])
+def list_report_subscriptions(admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    return db.query(ReportSubscription).order_by(ReportSubscription.created_at.desc()).all()
+
+@app.post("/api/admin/report-subscriptions", response_model=ReportSubscriptionOut)
+def create_report_subscription(
+    sub_in: ReportSubscriptionCreate,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == sub_in.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    require_project(db, sub_in.project_id)
+
+    existing = db.query(ReportSubscription).filter(
+        ReportSubscription.user_id == sub_in.user_id,
+        ReportSubscription.project_id == sub_in.project_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="This user is already subscribed to this project's digest")
+
+    subscription = ReportSubscription(
+        user_id=sub_in.user_id,
+        project_id=sub_in.project_id,
+        created_by_id=admin.id,
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+@app.patch("/api/admin/report-subscriptions/{subscription_id}", response_model=ReportSubscriptionOut)
+def update_report_subscription(
+    subscription_id: int,
+    update: ReportSubscriptionUpdate,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    subscription = db.query(ReportSubscription).filter(ReportSubscription.id == subscription_id).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    subscription.is_active = update.is_active
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+@app.delete("/api/admin/report-subscriptions/{subscription_id}")
+def delete_report_subscription(subscription_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+    subscription = db.query(ReportSubscription).filter(ReportSubscription.id == subscription_id).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    db.delete(subscription)
+    db.commit()
+    return {"message": "Subscription removed"}
+
+DIGEST_PERIOD_DAYS = 7
+
+@app.get("/api/reports/digest/run")
+def run_report_digests(
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Triggered by Vercel Cron (see vercel.json). Vercel auto-attaches
+    'Authorization: Bearer $CRON_SECRET' when the CRON_SECRET env var is set —
+    that exact env var name is required for Vercel's auto-injection to apply."""
+    cron_secret = os.getenv("CRON_SECRET")
+    if not cron_secret or authorization != f"Bearer {cron_secret}":
+        raise HTTPException(status_code=403, detail="Invalid or missing cron secret")
+
+    now = datetime.datetime.utcnow()
+    period_start = now - datetime.timedelta(days=DIGEST_PERIOD_DAYS)
+
+    subscriptions = db.query(ReportSubscription).filter(ReportSubscription.is_active == True).all()
+    sent = []
+    for sub in subscriptions:
+        if sub.last_sent_at is not None and sub.last_sent_at > period_start:
+            continue  # not due yet
+
+        metrics = calculate_qa_metrics(db, period_start, now, sub.project_id)
+        bm = metrics["bug_metrics"]
+        body = (
+            f"{bm['total_bugs']} new bug(s), {bm['resolved_bugs']} resolved, "
+            f"{bm['blocker_bugs']} blocker(s), MTTR {bm['mttr_hours']}h over the past {DIGEST_PERIOD_DAYS} days."
+        )
+        notify(
+            db,
+            sub.user_id,
+            notif_type="report_digest",
+            title=f"Weekly QA Digest: {sub.project.name}",
+            body=body,
+            link="#reports",
+            project_id=sub.project_id,
+            background_tasks=background_tasks,
+            email=True,
+        )
+        sub.last_sent_at = now
+        sent.append(sub.id)
+
+    db.commit()
+    return {"sent": sent}
 
 
 # ==================== STATIC FILE SERVING ====================

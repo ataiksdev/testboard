@@ -1004,6 +1004,92 @@ def test_reports_hidden_from_dev():
     assert resp.status_code == 200
 
 
+def test_bug_trend_in_report():
+    admin_headers = _make_admin()
+    project = client.post("/api/projects", json={"name": "Trend Proj", "key": "TRND"}, headers=admin_headers).json()
+
+    bug_a = client.post("/api/bugs", json={"title": "Trend bug A", "project_id": project["id"]}, headers=admin_headers).json()
+    client.post("/api/bugs", json={"title": "Trend bug B", "project_id": project["id"]}, headers=admin_headers)
+    client.put(f"/api/bugs/{bug_a['id']}", json={"status": "Resolved"}, headers=admin_headers)
+
+    today_str = datetime.date.today().isoformat()
+    resp = client.get(f"/api/reports?start_date={today_str}&end_date={today_str}&project_id={project['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+    trend = resp.json()["bug_trend"]
+    assert trend["bucket_days"] == 1
+    assert len(trend["points"]) == 1
+    assert trend["points"][0]["date"] == today_str
+    assert trend["points"][0]["opened"] == 2
+    assert trend["points"][0]["resolved"] == 1
+
+
+def test_report_subscription_crud():
+    admin_headers = _make_admin()
+    pm_headers, pm_id = _make_user_with_role(admin_headers, "digestpm@test.com", "Digest PM", "PM")
+    project = client.post("/api/projects", json={"name": "Subscription Proj", "key": "SUBP"}, headers=admin_headers).json()
+
+    # Non-admin cannot manage subscriptions
+    resp = client.post("/api/admin/report-subscriptions", json={"user_id": pm_id, "project_id": project["id"]}, headers=pm_headers)
+    assert resp.status_code == 403
+
+    resp = client.post("/api/admin/report-subscriptions", json={"user_id": pm_id, "project_id": project["id"]}, headers=admin_headers)
+    assert resp.status_code == 200
+    sub = resp.json()
+    assert sub["user_id"] == pm_id
+    assert sub["project_id"] == project["id"]
+    assert sub["is_active"] is True
+    assert sub["last_sent_at"] is None
+
+    # Duplicate rejected
+    resp = client.post("/api/admin/report-subscriptions", json={"user_id": pm_id, "project_id": project["id"]}, headers=admin_headers)
+    assert resp.status_code == 400
+
+    resp = client.get("/api/admin/report-subscriptions", headers=admin_headers)
+    assert resp.status_code == 200
+    assert any(s["id"] == sub["id"] for s in resp.json())
+
+    resp = client.patch(f"/api/admin/report-subscriptions/{sub['id']}", json={"is_active": False}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+    resp = client.delete(f"/api/admin/report-subscriptions/{sub['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+    resp = client.get("/api/admin/report-subscriptions", headers=admin_headers)
+    assert not any(s["id"] == sub["id"] for s in resp.json())
+
+
+def test_report_digest_run(fake_smtp, monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "test-secret-value")
+    monkeypatch.setenv("TESTBOARD_APP_URL", "https://testboard.example.com")
+
+    admin_headers = _make_admin()
+    qa_headers, qa_id = _make_user_with_role(admin_headers, "digestqa@test.com", "Digest QA", "QA")
+    project = client.post("/api/projects", json={"name": "Digest Proj", "key": "DGP"}, headers=admin_headers).json()
+    client.post("/api/admin/report-subscriptions", json={"user_id": qa_id, "project_id": project["id"]}, headers=admin_headers)
+
+    # Wrong/missing secret is rejected
+    resp = client.get("/api/reports/digest/run")
+    assert resp.status_code == 403
+    resp = client.get("/api/reports/digest/run", headers={"Authorization": "Bearer wrong-secret"})
+    assert resp.status_code == 403
+
+    fake_smtp.instances = []
+    resp = client.get("/api/reports/digest/run", headers={"Authorization": "Bearer test-secret-value"})
+    assert resp.status_code == 200
+    assert len(resp.json()["sent"]) == 1
+    assert len(fake_smtp.instances) == 1
+
+    resp = client.get("/api/notifications", headers=qa_headers)
+    assert any(n["type"] == "report_digest" for n in resp.json())
+
+    # Running again immediately does not re-send (not due for another 7 days)
+    fake_smtp.instances = []
+    resp = client.get("/api/reports/digest/run", headers={"Authorization": "Bearer test-secret-value"})
+    assert resp.status_code == 200
+    assert resp.json()["sent"] == []
+    assert len(fake_smtp.instances) == 0
+
+
 def test_bug_project_sequence_numbering():
     admin_headers = _make_admin()
     project_a = client.post("/api/projects", json={"name": "Seq Proj A", "key": "SQA"}, headers=admin_headers).json()

@@ -339,3 +339,22 @@ class Notification(Base):
 
     # Relationships
     user = relationship("User")
+
+
+class ReportSubscription(Base):
+    """Admin-managed weekly report digest: user_id receives a QA metrics email for project_id."""
+    __tablename__ = "report_subscriptions"
+    __table_args__ = (UniqueConstraint("user_id", "project_id", name="uq_report_subscription"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id])
+    project = relationship("Project")
+    created_by = relationship("User", foreign_keys=[created_by_id])

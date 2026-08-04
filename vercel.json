@@ -23,5 +23,11 @@
       "src": "/(.*)",
       "dest": "/frontend/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/reports/digest/run",
+      "schedule": "0 8 * * 1"
+    }
   ]
 }

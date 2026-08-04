@@ -39,6 +39,7 @@ TYPE_META = {
     "comment_mention": {"eyebrow": "You Were Mentioned", "accent": "gold", "cta_label": "View Comment"},
     "document_uploaded": {"eyebrow": "Document Uploaded", "accent": "gold", "cta_label": "View Documents"},
     "invited": {"eyebrow": "You're Invited", "accent": "green", "cta_label": "Set Your Password"},
+    "report_digest": {"eyebrow": "Weekly QA Digest", "accent": "gold", "cta_label": "View Full Report"},
 }
 DEFAULT_META = {"eyebrow": "Notification", "accent": "green", "cta_label": "Open TestBoard"}
 
