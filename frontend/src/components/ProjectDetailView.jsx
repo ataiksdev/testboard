@@ -7,6 +7,7 @@ import {
 import { useToast } from './Toast';
 import { formatDateTimeWAT } from '../utils/datetime';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
+import { DocumentUploadModal } from './DocumentUploadModal';
 
 const BUG_STATUSES = ["Open", "In Progress", "Resolved", "In QA", "Closed"];
 const SEVERITIES = ["Low", "Medium", "High", "Critical"];
@@ -22,12 +23,6 @@ const formatFileSize = (bytes) => {
   if (!bytes) return '';
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
-
-const deriveTitleFromFilename = (filename) => {
-  const base = filename.replace(/\.[^/.]+$/, '');
-  const spaced = base.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return spaced.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
 };
 
 export const ProjectDetailView = ({
@@ -73,14 +68,9 @@ export const ProjectDetailView = ({
 
   // Documents
   const [projectDocuments, setProjectDocuments] = useState([]);
-  const [docTitle, setDocTitle] = useState('');
-  const [docType, setDocType] = useState('BRD');
-  const [docVersionId, setDocVersionId] = useState('');
-  const [docReplacesId, setDocReplacesId] = useState('');
-  const [docFile, setDocFile] = useState(null);
-  const [uploadingDoc, setUploadingDoc] = useState(false);
   const [docSearch, setDocSearch] = useState('');
   const [previewDoc, setPreviewDoc] = useState(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
   // EOD comments
   const [projectComments, setProjectComments] = useState([]);
@@ -99,13 +89,9 @@ export const ProjectDetailView = ({
     setNewVersionName('');
     setNewVersionComponent('');
     setNewVersionChangelogFile(null);
-    setDocTitle('');
-    setDocType('BRD');
-    setDocVersionId('');
-    setDocReplacesId('');
-    setDocFile(null);
     setDocSearch('');
     setPreviewDoc(null);
+    setShowUploadModal(false);
     setNewCommentText('');
     setMentionedUserIds([]);
     setMentionQuery(null);
@@ -231,32 +217,6 @@ export const ProjectDetailView = ({
       showError(err.message);
     } finally {
       setSavingEdit(false);
-    }
-  };
-
-  const handleUploadDocument = async (e) => {
-    e.preventDefault();
-    if (!docFile || !docTitle.trim()) return;
-    try {
-      setUploadingDoc(true);
-      await uploadDocumentToProject(project.id, {
-        file: docFile,
-        title: docTitle.trim(),
-        docType,
-        versionId: docVersionId || undefined,
-        replacesId: docReplacesId || undefined,
-      });
-      setDocTitle('');
-      setDocType('BRD');
-      setDocVersionId('');
-      setDocReplacesId('');
-      setDocFile(null);
-      fetchProjectDocuments();
-      showSuccess("Document uploaded successfully.");
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setUploadingDoc(false);
     }
   };
 
@@ -393,19 +353,33 @@ export const ProjectDetailView = ({
 
       {/* Tabs */}
       <div style={styles.tabRow}>
-        <button
-          style={{ ...styles.tabBtn, ...(activeTab === 'overview' ? styles.tabBtnActive : {}) }}
-          onClick={() => setActiveTab('overview')}
-        >
-          Overview
-        </button>
-        <button
-          style={{ ...styles.tabBtn, ...(activeTab === 'documents' ? styles.tabBtnActive : {}) }}
-          onClick={() => setActiveTab('documents')}
-        >
-          <FileText size={13} style={{ marginRight: '5px' }} />
-          Documents {projectDocuments.length > 0 ? `(${projectDocuments.length})` : ''}
-        </button>
+        <div style={styles.tabRowLeft}>
+          <button
+            style={{ ...styles.tabBtn, ...(activeTab === 'overview' ? styles.tabBtnActive : {}) }}
+            onClick={() => setActiveTab('overview')}
+          >
+            Overview
+          </button>
+          <button
+            style={{ ...styles.tabBtn, ...(activeTab === 'documents' ? styles.tabBtnActive : {}) }}
+            onClick={() => setActiveTab('documents')}
+          >
+            <FileText size={13} style={{ marginRight: '5px' }} />
+            Documents {projectDocuments.length > 0 ? `(${projectDocuments.length})` : ''}
+          </button>
+        </div>
+        {activeTab === 'documents' && projectDocuments.length > 0 && (
+          <div style={styles.tabRowSearchWrap}>
+            <Search size={14} color="var(--text-muted)" />
+            <input
+              type="text"
+              value={docSearch}
+              onChange={(e) => setDocSearch(e.target.value)}
+              placeholder="Search documents..."
+              style={styles.tabRowSearchInput}
+            />
+          </div>
+        )}
       </div>
 
       <div style={styles.body}>
@@ -742,22 +716,17 @@ export const ProjectDetailView = ({
 
           return (
           <div style={styles.detailSection}>
-            <h4 style={styles.detailTitle}>
-              <FileText size={16} style={{ marginRight: '6px' }} />
-              Project Documents ({latestDocuments.length})
-            </h4>
-            {projectDocuments.length > 0 && (
-              <div style={styles.docSearchWrap}>
-                <Search size={14} color="var(--text-muted)" />
-                <input
-                  type="text"
-                  value={docSearch}
-                  onChange={(e) => setDocSearch(e.target.value)}
-                  placeholder="Search documents by title, filename, or type..."
-                  style={styles.docSearchInput}
-                />
-              </div>
-            )}
+            <div style={styles.docSectionHeader}>
+              <h4 style={{ ...styles.detailTitle, marginBottom: 0 }}>
+                <FileText size={16} style={{ marginRight: '6px' }} />
+                Project Documents ({latestDocuments.length})
+              </h4>
+              {canEdit && (
+                <button className="btn-primary" style={styles.uploadTriggerBtn} onClick={() => setShowUploadModal(true)}>
+                  <Upload size={14} /> Upload Document
+                </button>
+              )}
+            </div>
             {projectDocuments.length === 0 ? (
               <p style={styles.noComments}>No documents uploaded yet.</p>
             ) : visibleDocuments.length === 0 ? (
@@ -804,55 +773,6 @@ export const ProjectDetailView = ({
                 </div>
               ))
             )}
-            {canEdit && (
-              <form onSubmit={handleUploadDocument} style={styles.docUploadForm}>
-                <div style={styles.row}>
-                  <input
-                    type="text"
-                    value={docTitle}
-                    onChange={(e) => setDocTitle(e.target.value)}
-                    placeholder="Document title, e.g. BRD v2"
-                    required
-                    style={{ ...styles.modalInput, flex: 2 }}
-                  />
-                  <select value={docType} onChange={(e) => setDocType(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
-                    {documentTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div style={styles.row}>
-                  {projectVersions.length > 0 && (
-                    <select value={docVersionId} onChange={(e) => setDocVersionId(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
-                      <option value="">No specific version</option>
-                      {projectVersions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
-                    </select>
-                  )}
-                  {latestDocuments.length > 0 && (
-                    <select value={docReplacesId} onChange={(e) => setDocReplacesId(e.target.value)} style={{ ...styles.modalSelect, flex: 1 }}>
-                      <option value="">Replaces (optional)</option>
-                      {latestDocuments.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
-                    </select>
-                  )}
-                </div>
-                <div style={styles.row}>
-                  <input
-                    type="file"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0] || null;
-                      setDocFile(file);
-                      if (file && !docTitle.trim()) {
-                        setDocTitle(deriveTitleFromFilename(file.name));
-                      }
-                    }}
-                    style={styles.docFileInput}
-                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
-                  />
-                  <button type="submit" className="btn-secondary" style={styles.addMemberBtn} disabled={!docFile || !docTitle.trim() || uploadingDoc}>
-                    <Upload size={14} /> {uploadingDoc ? 'Uploading...' : 'Upload'}
-                  </button>
-                </div>
-              </form>
-            )}
-
             {previewDoc && (
               <DocumentPreviewModal
                 document={previewDoc}
@@ -868,6 +788,20 @@ export const ProjectDetailView = ({
                   setProjectDocuments(docs => docs.map(d => d.id === updated.id ? updated : d));
                   setPreviewDoc(updated);
                 }}
+              />
+            )}
+
+            {showUploadModal && (
+              <DocumentUploadModal
+                projects={[project]}
+                fixedProjectId={project.id}
+                versionsByProject={{ [project.id]: projectVersions }}
+                documentsByProject={{ [project.id]: projectDocuments }}
+                documentTypes={documentTypes}
+                token={token}
+                API_URL={API_URL}
+                onClose={() => setShowUploadModal(false)}
+                onUploaded={fetchProjectDocuments}
               />
             )}
           </div>
@@ -942,10 +876,35 @@ const styles = {
   },
   tabRow: {
     display: 'flex',
-    gap: '6px',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '12px',
     borderBottom: '2px solid var(--glass-border)',
     marginBottom: '24px',
     flexShrink: 0,
+  },
+  tabRowLeft: {
+    display: 'flex',
+    gap: '6px',
+  },
+  tabRowSearchWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    padding: '6px 10px',
+    marginBottom: '8px',
+  },
+  tabRowSearchInput: {
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    color: 'var(--text-main)',
+    fontSize: '13px',
+    width: '180px',
   },
   tabBtn: {
     display: 'flex',
@@ -1309,23 +1268,21 @@ const styles = {
     alignItems: 'center',
     flexShrink: 0,
   },
-  docSearchWrap: {
+  docSectionHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
-    background: 'var(--bg-tertiary)',
-    border: '2px solid var(--glass-border)',
-    borderRadius: 'var(--border-radius-sm)',
-    padding: '8px 12px',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '12px',
     marginBottom: '14px',
   },
-  docSearchInput: {
-    background: 'transparent',
-    border: 'none',
-    outline: 'none',
-    color: 'var(--text-main)',
+  uploadTriggerBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '9px 16px',
     fontSize: '13px',
-    width: '100%',
+    whiteSpace: 'nowrap',
   },
   revisionBadge: {
     display: 'inline-flex',

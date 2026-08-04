@@ -3,9 +3,11 @@ import { useAuth } from '../utils/auth';
 import { useToast } from './Toast';
 import { canManageProjects } from '../utils/roles';
 import {
-  Files, Search, Upload, Trash2, Download, GitBranch, History, FolderKanban
+  Files, Search, Upload, Trash2, Download, GitBranch, History, FolderKanban,
+  FileType2
 } from 'lucide-react';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
+import { DocumentUploadModal } from './DocumentUploadModal';
 
 const DOCUMENT_TYPES = ["BRD", "Report", "Test Plan", "Changelog", "Addendum", "Other"];
 
@@ -15,10 +17,28 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const formatTotalSize = (bytes) => {
+  if (!bytes) return '0 KB';
+  return formatFileSize(bytes);
+};
+
 const deriveTitleFromFilename = (filename) => {
   const base = filename.replace(/\.[^/.]+$/, '');
   const spaced = base.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
   return spaced.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+};
+
+const StatBar = ({ label, count, total, color }) => {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+  return (
+    <div style={styles.statBarRow}>
+      <span style={styles.statBarLabel}>{label}</span>
+      <div style={styles.statBarTrack}>
+        <div style={{ ...styles.statBarFill, width: `${pct}%`, background: color }} />
+      </div>
+      <span style={styles.statBarCount}>{count}</span>
+    </div>
+  );
 };
 
 export const DocumentsHub = () => {
@@ -35,14 +55,7 @@ export const DocumentsHub = () => {
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [previewDoc, setPreviewDoc] = useState(null); // { doc, projectId }
-
-  const [uploadProjectId, setUploadProjectId] = useState('');
-  const [docTitle, setDocTitle] = useState('');
-  const [docType, setDocType] = useState('BRD');
-  const [docVersionId, setDocVersionId] = useState('');
-  const [docReplacesId, setDocReplacesId] = useState('');
-  const [docFile, setDocFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
   const authHeaders = { 'Authorization': `Bearer ${token}` };
 
@@ -83,48 +96,6 @@ export const DocumentsHub = () => {
 
   const getFileUrl = (fileUrl) => (!fileUrl ? '' : fileUrl.startsWith('http') ? fileUrl : `${API_URL}${fileUrl}`);
 
-  const uploadTargetVersions = uploadProjectId ? (versionsByProject[uploadProjectId] || []) : [];
-  const uploadTargetDocs = uploadProjectId ? (documentsByProject[uploadProjectId] || []) : [];
-  const uploadTargetLatestDocs = useMemo(() => {
-    const superseded = new Set(uploadTargetDocs.filter(d => d.replaces_document_id).map(d => d.replaces_document_id));
-    return uploadTargetDocs.filter(d => !superseded.has(d.id));
-  }, [uploadTargetDocs]);
-
-  const handleUpload = async (e) => {
-    e.preventDefault();
-    if (!uploadProjectId || !docFile || !docTitle.trim()) return;
-    try {
-      setUploading(true);
-      const formData = new FormData();
-      formData.append('title', docTitle.trim());
-      formData.append('doc_type', docType);
-      if (docVersionId) formData.append('version_id', docVersionId);
-      if (docReplacesId) formData.append('replaces_document_id', docReplacesId);
-      formData.append('file', docFile);
-
-      const response = await fetch(`${API_URL}/api/projects/${uploadProjectId}/documents`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: formData
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to upload document');
-      }
-      setDocTitle('');
-      setDocType('BRD');
-      setDocVersionId('');
-      setDocReplacesId('');
-      setDocFile(null);
-      fetchAll();
-      showSuccess('Document uploaded successfully.');
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const handleDelete = async (projectId, documentId) => {
     try {
       const response = await fetch(`${API_URL}/api/projects/${projectId}/documents/${documentId}`, {
@@ -137,6 +108,36 @@ export const DocumentsHub = () => {
       showError(err.message);
     }
   };
+
+  // Overview stats: computed from all loaded documents (not filtered by search/project selector)
+  const stats = useMemo(() => {
+    const allDocs = projects.flatMap(p => documentsByProject[p.id] || []);
+    const supersededIds = new Set(allDocs.filter(d => d.replaces_document_id).map(d => d.replaces_document_id));
+    const latestDocs = allDocs.filter(d => !supersededIds.has(d.id));
+
+    const typeCounts = {};
+    DOCUMENT_TYPES.forEach(t => { typeCounts[t] = 0; });
+    latestDocs.forEach(d => { typeCounts[d.doc_type] = (typeCounts[d.doc_type] || 0) + 1; });
+
+    const projectCounts = projects
+      .map(p => ({ project: p, count: (documentsByProject[p.id] || []).filter(d => !supersededIds.has(d.id)).length }))
+      .filter(pc => pc.count > 0)
+      .sort((a, b) => b.count - a.count);
+
+    const totalStorageBytes = allDocs.reduce((sum, d) => sum + (d.file_size || 0), 0);
+    const contributorIds = new Set(allDocs.map(d => d.uploaded_by.id));
+
+    return {
+      totalDocuments: latestDocs.length,
+      projectsWithDocs: projectCounts.length,
+      totalProjects: projects.length,
+      totalStorageBytes,
+      revisionsTracked: allDocs.filter(d => d.replaces_document_id).length,
+      contributors: contributorIds.size,
+      typeCounts,
+      projectCounts,
+    };
+  }, [projects, documentsByProject]);
 
   // Build project groups: latest revision only, with a revision-history count, filtered by search + projectFilter
   const searchTerm = search.trim().toLowerCase();
@@ -179,6 +180,55 @@ export const DocumentsHub = () => {
       </div>
       <p style={styles.subtitle}>Every document across your projects, searchable in one place.</p>
 
+      <div style={styles.statsGrid}>
+        <div className="glass-panel" style={styles.statTile}>
+          <span style={styles.statValue}>{stats.totalDocuments}</span>
+          <span style={styles.statLabel}>Documents</span>
+        </div>
+        <div className="glass-panel" style={styles.statTile}>
+          <span style={styles.statValue}>{stats.projectsWithDocs}<span style={styles.statValueOf}>/{stats.totalProjects}</span></span>
+          <span style={styles.statLabel}>Projects Covered</span>
+        </div>
+        <div className="glass-panel" style={styles.statTile}>
+          <span style={styles.statValue}>{formatTotalSize(stats.totalStorageBytes)}</span>
+          <span style={styles.statLabel}>Storage Used</span>
+        </div>
+        <div className="glass-panel" style={styles.statTile}>
+          <span style={styles.statValue}>{stats.revisionsTracked}</span>
+          <span style={styles.statLabel}>Revisions Tracked</span>
+        </div>
+        <div className="glass-panel" style={styles.statTile}>
+          <span style={styles.statValue}>{stats.contributors}</span>
+          <span style={styles.statLabel}>Contributors</span>
+        </div>
+      </div>
+
+      {stats.totalDocuments > 0 && (
+        <div style={styles.statBreakdownGrid}>
+          <div className="glass-panel" style={styles.statBreakdownPanel}>
+            <h3 style={styles.statBreakdownTitle}>
+              <FileType2 size={15} style={{ marginRight: '7px' }} />
+              By Document Type
+            </h3>
+            {DOCUMENT_TYPES.map(t => (
+              <StatBar key={t} label={t} count={stats.typeCounts[t] || 0} total={stats.totalDocuments} color="var(--primary-neon)" />
+            ))}
+          </div>
+          <div className="glass-panel" style={styles.statBreakdownPanel}>
+            <h3 style={styles.statBreakdownTitle}>
+              <FolderKanban size={15} style={{ marginRight: '7px' }} />
+              By Project
+            </h3>
+            {stats.projectCounts.slice(0, 6).map(({ project, count }) => (
+              <StatBar key={project.id} label={project.name} count={count} total={stats.totalDocuments} color="var(--accent-mustard)" />
+            ))}
+            {stats.projectCounts.length > 6 && (
+              <p style={styles.statMoreNote}>+ {stats.projectCounts.length - 6} more project(s) with documents.</p>
+            )}
+          </div>
+        </div>
+      )}
+
       <div style={styles.toolbar}>
         <div style={styles.searchWrap}>
           <Search size={16} color="var(--text-muted)" />
@@ -193,69 +243,12 @@ export const DocumentsHub = () => {
           <option value="">All Projects</option>
           {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        {canEdit && (
+          <button className="btn-primary" style={styles.uploadBtn} onClick={() => setShowUploadModal(true)}>
+            <Upload size={14} /> Upload Document
+          </button>
+        )}
       </div>
-
-      {canEdit && (
-        <div className="glass-panel" style={styles.uploadPanel}>
-          <h3 style={styles.uploadTitle}>
-            <Upload size={15} style={{ marginRight: '8px' }} />
-            Upload Document
-          </h3>
-          <form onSubmit={handleUpload} style={styles.uploadForm}>
-            <div style={styles.row}>
-              <select
-                value={uploadProjectId}
-                onChange={(e) => { setUploadProjectId(e.target.value); setDocVersionId(''); setDocReplacesId(''); }}
-                required
-                style={{ ...styles.input, flex: 1 }}
-              >
-                <option value="">Select project...</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              <select value={docType} onChange={(e) => setDocType(e.target.value)} style={{ ...styles.input, flex: 1 }}>
-                {DOCUMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div style={styles.row}>
-              <input
-                type="text"
-                value={docTitle}
-                onChange={(e) => setDocTitle(e.target.value)}
-                placeholder="Document title, e.g. BRD v2"
-                required
-                style={{ ...styles.input, flex: 2 }}
-              />
-              {uploadTargetVersions.length > 0 && (
-                <select value={docVersionId} onChange={(e) => setDocVersionId(e.target.value)} style={{ ...styles.input, flex: 1 }}>
-                  <option value="">No specific version</option>
-                  {uploadTargetVersions.map(v => <option key={v.id} value={v.id}>{v.version_name}</option>)}
-                </select>
-              )}
-              {uploadTargetLatestDocs.length > 0 && (
-                <select value={docReplacesId} onChange={(e) => setDocReplacesId(e.target.value)} style={{ ...styles.input, flex: 1 }}>
-                  <option value="">Replaces (optional)</option>
-                  {uploadTargetLatestDocs.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
-                </select>
-              )}
-            </div>
-            <div style={styles.row}>
-              <input
-                type="file"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] || null;
-                  setDocFile(file);
-                  if (file && !docTitle.trim()) setDocTitle(deriveTitleFromFilename(file.name));
-                }}
-                style={styles.fileInput}
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.webp"
-              />
-              <button type="submit" className="btn-secondary" style={styles.uploadBtn} disabled={!uploadProjectId || !docFile || !docTitle.trim() || uploading}>
-                <Upload size={14} /> {uploading ? 'Uploading...' : 'Upload'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
 
       {projectGroups.length === 0 ? (
         <p style={styles.emptyText}>
@@ -328,6 +321,19 @@ export const DocumentsHub = () => {
           }}
         />
       )}
+
+      {showUploadModal && (
+        <DocumentUploadModal
+          projects={projects}
+          versionsByProject={versionsByProject}
+          documentsByProject={documentsByProject}
+          documentTypes={DOCUMENT_TYPES}
+          token={token}
+          API_URL={API_URL}
+          onClose={() => setShowUploadModal(false)}
+          onUploaded={fetchAll}
+        />
+      )}
     </div>
   );
 };
@@ -357,6 +363,98 @@ const styles = {
     textAlign: 'center',
     padding: '80px 0',
     color: 'var(--text-muted)',
+  },
+  statsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    gap: '14px',
+    marginBottom: '16px',
+  },
+  statTile: {
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    textAlign: 'center',
+  },
+  statValue: {
+    fontSize: '26px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
+    lineHeight: '1',
+    marginBottom: '6px',
+  },
+  statValueOf: {
+    fontSize: '16px',
+    fontWeight: '600',
+    color: 'var(--text-subtle)',
+  },
+  statLabel: {
+    fontSize: '11px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+  },
+  statBreakdownGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gap: '14px',
+    marginBottom: '20px',
+  },
+  statBreakdownPanel: {
+    padding: '18px 20px',
+  },
+  statBreakdownTitle: {
+    fontSize: '13px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+    fontFamily: 'var(--font-display)',
+    display: 'flex',
+    alignItems: 'center',
+    marginBottom: '14px',
+  },
+  statBarRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    marginBottom: '9px',
+  },
+  statBarLabel: {
+    width: '96px',
+    flexShrink: 0,
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    fontWeight: '600',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  statBarTrack: {
+    flex: 1,
+    height: '9px',
+    background: 'var(--bg-tertiary)',
+    border: '2px solid var(--glass-border)',
+    borderRadius: 'var(--border-radius-sm)',
+    overflow: 'hidden',
+  },
+  statBarFill: {
+    height: '100%',
+    transition: 'width 0.3s ease',
+  },
+  statBarCount: {
+    width: '24px',
+    flexShrink: 0,
+    textAlign: 'right',
+    fontSize: '12px',
+    fontWeight: '700',
+    color: 'var(--text-strong)',
+  },
+  statMoreNote: {
+    fontSize: '11px',
+    color: 'var(--text-subtle)',
+    marginTop: '4px',
   },
   toolbar: {
     display: 'flex',
