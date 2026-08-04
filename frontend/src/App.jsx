@@ -6,15 +6,16 @@ import { AcceptInvitePage } from './components/AcceptInvitePage';
 import { ProjectTracker } from './components/ProjectTracker';
 import { BugTracker } from './components/BugTracker';
 import { ReportsDashboard } from './components/ReportsDashboard';
+import { DocumentsHub } from './components/DocumentsHub';
 import { AdminPanel } from './components/AdminPanel';
 import { NotificationBell } from './components/NotificationBell';
-import { canViewReports } from './utils/roles';
+import { canViewReports, canViewDocuments } from './utils/roles';
 import {
-  FolderKanban, Bug as BugIcon, FileText, Shield,
+  FolderKanban, Bug as BugIcon, FileText, Files, Shield,
   LogOut, Terminal, Menu, X, Moon, Sun, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
-const VALID_TABS = ['projects', 'bugs', 'reports', 'admin'];
+const VALID_TABS = ['projects', 'bugs', 'reports', 'documents', 'admin'];
 
 const AppContent = () => {
   const { user, logout } = useAuth();
@@ -58,6 +59,13 @@ const AppContent = () => {
     }
   }, [user, activeTab]);
 
+  // Bounce Devs/Guests off a stale/shared #documents link
+  useEffect(() => {
+    if (user && activeTab === 'documents' && !canViewDocuments(user.role)) {
+      setActiveTab('projects');
+    }
+  }, [user, activeTab]);
+
   // Invite links must work regardless of login state (unauthenticated by design)
   if (window.location.hash.startsWith('#accept-invite')) {
     return <AcceptInvitePage />;
@@ -81,6 +89,7 @@ const AppContent = () => {
     { id: 'projects', label: 'Projects', icon: FolderKanban },
     { id: 'bugs', label: 'Bugs', icon: BugIcon },
     ...(canViewReports(user.role) ? [{ id: 'reports', label: 'Reports', icon: FileText }] : []),
+    ...(canViewDocuments(user.role) ? [{ id: 'documents', label: 'Documents', icon: Files }] : []),
     ...(user.role === 'Admin' ? [{ id: 'admin', label: 'Admin', icon: Shield }] : []),
   ];
 
@@ -195,6 +204,9 @@ const AppContent = () => {
           )}
           {activeTab === 'reports' && canViewReports(user.role) && (
             <ReportsDashboard />
+          )}
+          {activeTab === 'documents' && canViewDocuments(user.role) && (
+            <DocumentsHub />
           )}
           {activeTab === 'admin' && user.role === 'Admin' && (
             <AdminPanel />

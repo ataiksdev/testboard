@@ -13,4 +13,5 @@ export const canManageProjects = (role) => ['Admin', 'PM', 'QA', 'BA'].includes(
 export const canManageBugs = (role) => ['Admin', 'Dev', 'QA'].includes(role);
 export const canManageMembers = (role) => ['Admin', 'PM'].includes(role);
 export const canViewReports = (role) => role !== 'Dev';
+export const canViewDocuments = (role) => !['Dev', 'Guest'].includes(role);
 export const canEditBugFields = (role) => ['Admin', 'QA'].includes(role);
